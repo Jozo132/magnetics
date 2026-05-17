@@ -1471,7 +1471,6 @@
 
     getEl("addConstraintBtn").addEventListener("click", () => {
       addConstraint(readConstraintInput());
-      openEditorModal("constraint");
     });
     getEl("updateConstraintBtn").addEventListener("click", () => {
       const constraint = state.constraints.find((entry) => entry.id === state.selectedConstraintId);
