@@ -8,6 +8,7 @@
   const DRAG = 0.992;
   const ROT_DRAG = 0.99;
   const ANGULAR_INERTIA_FACTOR = 0.5;
+  const TRACK_SAMPLE_LIMIT = 5000;
   const FIXED_DT = 1 / 120;
   const MAX_STEPS_PER_FRAME = 8;
 
@@ -176,7 +177,7 @@
     else if (metric === "y") value = b.pos.y;
     else if (metric === "angle") value = (b.angle * 180) / Math.PI;
     state.tracking.samples.push({ t: worldTime, v: value });
-    if (state.tracking.samples.length > 5000) state.tracking.samples.shift();
+    if (state.tracking.samples.length > TRACK_SAMPLE_LIMIT) state.tracking.samples.shift();
   }
 
   function step(dt) {
@@ -359,7 +360,7 @@
       }
       for (const c of data.constraints || []) state.constraints.push(c);
     } catch (err) {
-      alert("Invalid project JSON format. Please import a valid Magnetics 2D Lab exported project.");
+      alert(`Invalid project JSON format. Please import a valid Magnetics 2D Lab exported project. ${err.message}`);
     }
   }
 
