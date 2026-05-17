@@ -2,6 +2,10 @@
   box-sizing: border-box;
 }
 
+:root {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   font-family: Inter, system-ui, sans-serif;
@@ -9,54 +13,114 @@ body {
   color: #e2e8f0;
 }
 
-main {
-  display: grid;
-  grid-template-columns: 420px 1fr;
-  min-height: 100vh;
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
-.panel {
-  border-right: 1px solid #334155;
-  padding: 14px;
-  background: #0b1222;
-  overflow: auto;
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #334155;
+  background: rgba(11, 18, 34, 0.96);
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 h1,
-h2 {
-  margin: 8px 0;
+h2,
+h3 {
+  margin: 0;
 }
 
 h1 {
-  font-size: 1.25rem;
+  font-size: 1.3rem;
 }
 
 h2 {
-  font-size: 1rem;
-  margin-top: 16px;
+  font-size: 1.05rem;
+}
+
+h3 {
+  font-size: 0.98rem;
+  margin-bottom: 10px;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  color: #94a3b8;
+  font-size: 0.88rem;
+}
+
+.toolbar-group {
+  display: flex;
+  gap: 8px;
+}
+
+.wrap {
+  flex-wrap: wrap;
+}
+
+.app-shell {
+  min-height: calc(100vh - 86px);
+}
+
+.workspace {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.workspace-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.status-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid #334155;
+  background: #111827;
+  color: #cbd5e1;
+  font-size: 0.82rem;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 label {
   display: flex;
   flex-direction: column;
-  font-size: 0.78rem;
   gap: 4px;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.checkbox-label {
+  justify-content: end;
+}
+
+.checkbox-label input {
+  width: 18px;
+  height: 18px;
+  margin-top: 6px;
 }
 
 .row {
   display: flex;
   gap: 8px;
-  margin: 8px 0;
-}
-
-.wrap {
-  flex-wrap: wrap;
+  margin-top: 10px;
 }
 
 input,
@@ -66,29 +130,29 @@ textarea {
   background: #111827;
   border: 1px solid #334155;
   color: #f8fafc;
-  border-radius: 6px;
-  padding: 6px 8px;
+  border-radius: 8px;
+  padding: 8px 10px;
 }
 
 button {
   cursor: pointer;
 }
 
-button:hover {
+button:hover,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
   border-color: #22d3ee;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.45);
 }
 
 textarea {
   width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-height: 180px;
   resize: vertical;
-}
-
-.workspace {
-  display: grid;
-  grid-template-rows: auto auto;
-  gap: 6px;
-  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 canvas {
@@ -96,4 +160,89 @@ canvas {
   background: #020617;
   width: 100%;
   max-width: 100%;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(6px);
+  z-index: 40;
+}
+
+.modal {
+  width: min(920px, 100%);
+  max-height: min(88vh, 900px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  border: 1px solid #334155;
+  border-radius: 18px;
+  background: #0b1222;
+  box-shadow: 0 24px 80px rgba(2, 6, 23, 0.6);
+  overflow: hidden;
+}
+
+.modal-header,
+.modal-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #1e293b;
+}
+
+.modal-tabs {
+  justify-content: flex-start;
+  padding-top: 0;
+}
+
+.tab-btn.active {
+  border-color: #22d3ee;
+  color: #67e8f9;
+}
+
+.icon-btn {
+  min-width: 40px;
+  padding-inline: 0;
+}
+
+.modal-body {
+  overflow: auto;
+  padding: 16px;
+}
+
+.editor-panel,
+.modal-scroll-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.panel-section {
+  padding: 14px;
+  border: 1px solid #1e293b;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.7);
+}
+
+.hidden {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  .modal-overlay {
+    padding: 12px;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    position: static;
+  }
 }

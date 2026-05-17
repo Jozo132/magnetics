@@ -103,6 +103,7 @@
   let accumulator = 0;
   let worldTime = 0;
   let nextBodyId = 1;
+  let nextConstraintId = 1;
   let customMaterialCounter = 1;
 
   const state = {
@@ -111,8 +112,8 @@
     constraints: [],
     materials: MATERIAL_PRESETS.map((material) => ({ ...material })),
     display: {
-      fieldArrowSpacing: 72,
-      fieldSampleResolution: 18,
+      fieldArrowSpacing: 22,
+      fieldSampleResolution: 6,
       fieldScale: 1800,
     },
     tracking: {
@@ -121,7 +122,9 @@
       samples: [],
     },
     selectedBodyId: null,
+    selectedConstraintId: null,
     selectedMaterialId: "steel",
+    editorView: "shape",
   };
 
   const v = (x = 0, y = 0) => ({ x, y });
@@ -185,13 +188,14 @@
       body.massOverride = Number.isFinite(parsedMassOverride) ? Math.max(0.05, parsedMassOverride) : 0.05;
     }
 
+    body.fixed = Boolean(body.fixed);
     const autoMass = Math.max(0.05, bodyArea(body) * material.density * MASS_SCALE);
     body.mass = body.massOverride == null ? autoMass : body.massOverride;
-    body.invMass = body.mass > 0 ? 1 / body.mass : 0;
+    body.invMass = body.fixed || body.mass <= 0 ? 0 : 1 / body.mass;
 
     if (body.type === "circle") body.inertia = 0.5 * body.mass * body.radius * body.radius;
     else body.inertia = (body.mass * (body.width * body.width + body.height * body.height)) / 12;
-    body.invInertia = body.inertia > 0 ? 1 / body.inertia : 0;
+    body.invInertia = body.fixed || body.inertia <= 0 ? 0 : 1 / body.inertia;
     body.restitution = DEFAULT_RESTITUTION;
     body.friction = DEFAULT_FRICTION;
 
@@ -216,6 +220,7 @@
       radius: body.radius,
       materialId: body.materialId,
       massOverride: body.massOverride,
+      fixed: body.fixed,
       magnetic: {
         enabled: body.magnetic.enabled,
         model: body.magnetic.model,
@@ -236,6 +241,7 @@
     body.radius = setup.radius;
     body.materialId = setup.materialId;
     body.massOverride = setup.massOverride == null ? null : setup.massOverride;
+    body.fixed = Boolean(setup.fixed);
     body.magnetic = {
       enabled: Boolean(setup.magnetic?.enabled),
       model: setup.magnetic?.model || "permanentDipole",
@@ -267,6 +273,7 @@
       radius: input.radius,
       materialId: input.materialId,
       massOverride: input.massOverride,
+      fixed: input.fixed,
       magnetic: {
         enabled: input.magneticEnabled,
         model: input.magneticModel,
@@ -299,6 +306,7 @@
     body.radius = input.radius;
     body.materialId = input.materialId;
     body.massOverride = input.massOverride;
+    body.fixed = input.fixed;
     body.magnetic = {
       enabled: input.magneticEnabled,
       model: input.magneticModel,
@@ -322,22 +330,54 @@
     state.constraints = state.constraints.filter((constraint) => constraint.aId !== bodyId && constraint.bId !== bodyId);
     if (state.tracking.bodyId === bodyId) state.tracking.bodyId = null;
     if (state.selectedBodyId === bodyId) state.selectedBodyId = null;
+    if (!state.constraints.some((constraint) => constraint.id === state.selectedConstraintId)) state.selectedConstraintId = null;
     state.tracking.samples = [];
     refreshUiLists();
     loadSelectedBodyIntoForm();
+    loadSelectedConstraintIntoForm();
   }
 
-  function addConstraint(aId, bId, distance, stiffness) {
-    const a = state.bodies.find((body) => body.id === aId);
-    const b = state.bodies.find((body) => body.id === bId);
-    if (!a || !b || aId === bId) return;
-    state.constraints.push({
-      id: `${aId}-${bId}-${state.constraints.length + 1}`,
-      aId,
-      bId,
-      distance: Math.max(1, Number(distance) || 1),
-      stiffness: Math.max(0.1, Number(stiffness) || 0.1),
-    });
+  function normalizeConstraintInput(input) {
+    return {
+      aId: Number(input.aId),
+      bId: Number(input.bId),
+      distance: Math.max(1, Number(input.distance) || 1),
+      stiffness: Math.max(0.1, Number(input.stiffness) || 0.1),
+    };
+  }
+
+  function addConstraint(input) {
+    const normalized = normalizeConstraintInput(input);
+    const a = state.bodies.find((body) => body.id === normalized.aId);
+    const b = state.bodies.find((body) => body.id === normalized.bId);
+    if (!a || !b || normalized.aId === normalized.bId) return null;
+    const constraint = {
+      id: `constraint-${nextConstraintId++}`,
+      ...normalized,
+    };
+    state.constraints.push(constraint);
+    state.selectedConstraintId = constraint.id;
+    refreshUiLists();
+    loadSelectedConstraintIntoForm();
+    return constraint;
+  }
+
+  function updateConstraintFromInput(constraint, input) {
+    const normalized = normalizeConstraintInput(input);
+    const a = state.bodies.find((body) => body.id === normalized.aId);
+    const b = state.bodies.find((body) => body.id === normalized.bId);
+    if (!constraint || !a || !b || normalized.aId === normalized.bId) return;
+    Object.assign(constraint, normalized);
+    state.selectedConstraintId = constraint.id;
+    refreshUiLists();
+    loadSelectedConstraintIntoForm();
+  }
+
+  function removeConstraint(constraintId) {
+    state.constraints = state.constraints.filter((constraint) => constraint.id !== constraintId);
+    if (state.selectedConstraintId === constraintId) state.selectedConstraintId = null;
+    refreshUiLists();
+    loadSelectedConstraintIntoForm();
   }
 
   function readShapeInput() {
@@ -356,6 +396,7 @@
       angle: ((Number(getEl("shapeAngle").value) || 0) * Math.PI) / 180,
       massOverride: massText === "" ? null : Math.max(0.05, Number(massText) || 0.05),
       materialId,
+      fixed: getEl("shapeFixed").checked,
       magneticEnabled: getEl("shapeMagnetic").checked,
       magneticModel: getEl("shapeMagModel").value,
       magneticAngle: ((Number(getEl("shapeMagAngle").value) || 0) * Math.PI) / 180,
@@ -376,6 +417,7 @@
     getEl("shapeAngle").value = (((body.setup ? body.setup.angle : body.angle) * 180) / Math.PI).toFixed(2);
     getEl("shapeMass").value = body.massOverride == null ? "" : body.massOverride.toFixed(2);
     getEl("shapeMaterial").value = material.id;
+    getEl("shapeFixed").checked = body.fixed;
     getEl("shapeMagnetic").checked = magneticEnabled(body);
     getEl("shapeMagModel").value = body.magnetic.model;
     getEl("shapeMagAngle").value = ((body.magnetic.localAngle * 180) / Math.PI).toFixed(2);
@@ -396,6 +438,7 @@
     getEl("shapeAngle").value = 0;
     getEl("shapeMass").value = "";
     getEl("shapeMaterial").value = state.selectedMaterialId || state.materials[0]?.id || "";
+    getEl("shapeFixed").checked = false;
     getEl("shapeMagnetic").checked = false;
     getEl("shapeMagModel").value = "permanentDipole";
     getEl("shapeMagAngle").value = 0;
@@ -410,6 +453,7 @@
     const select = getEl("bodySelect");
     select.value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
     loadSelectedBodyIntoForm();
+    refreshStatusSummary();
   }
 
   function loadSelectedBodyIntoForm() {
@@ -439,6 +483,51 @@
     if ([...select.options].some((option) => option.value === previous)) select.value = previous;
   }
 
+  function readConstraintInput() {
+    return {
+      aId: Number(getEl("constraintA").value),
+      bId: Number(getEl("constraintB").value),
+      distance: Number(getEl("constraintDist").value),
+      stiffness: Number(getEl("constraintK").value),
+    };
+  }
+
+  function populateConstraintForm(constraint) {
+    getEl("constraintSelect").value = constraint.id;
+    getEl("constraintA").value = String(constraint.aId);
+    getEl("constraintB").value = String(constraint.bId);
+    getEl("constraintDist").value = constraint.distance.toFixed(2);
+    getEl("constraintK").value = constraint.stiffness.toFixed(2);
+  }
+
+  function clearConstraintForm() {
+    getEl("constraintSelect").value = "";
+    const [firstBody, secondBody] = state.bodies;
+    getEl("constraintA").value = firstBody ? String(firstBody.id) : "";
+
+    let bodyBValue = "";
+    if (secondBody) bodyBValue = String(secondBody.id);
+    else if (firstBody) bodyBValue = String(firstBody.id);
+    getEl("constraintB").value = bodyBValue;
+
+    getEl("constraintDist").value = 120;
+    getEl("constraintK").value = 8;
+  }
+
+  function setSelectedConstraint(constraintId) {
+    state.selectedConstraintId = constraintId || null;
+    loadSelectedConstraintIntoForm();
+  }
+
+  function loadSelectedConstraintIntoForm() {
+    const constraint = state.constraints.find((entry) => entry.id === state.selectedConstraintId);
+    if (!constraint) {
+      clearConstraintForm();
+      return;
+    }
+    populateConstraintForm(constraint);
+  }
+
   function refreshMaterialOptions() {
     const label = (material) => `${material.name} (${material.id})`;
     refreshSelect(getEl("shapeMaterial"), state.materials, (material) => material.id, label);
@@ -453,7 +542,7 @@
   }
 
   function refreshBodyOptions() {
-    const bodyLabel = (body) => `#${body.id} ${body.type} (${materialById(body.materialId).name})`;
+    const bodyLabel = (body) => `${body.fixed ? "📌 " : ""}#${body.id} ${body.type} (${materialById(body.materialId).name})`;
     refreshSelect(getEl("bodySelect"), state.bodies, (body) => body.id, bodyLabel, "New body");
     refreshSelect(getEl("constraintA"), state.bodies, (body) => body.id, bodyLabel);
     refreshSelect(getEl("constraintB"), state.bodies, (body) => body.id, bodyLabel);
@@ -470,9 +559,34 @@
     getEl("trackBody").value = state.tracking.bodyId == null ? "" : String(state.tracking.bodyId);
   }
 
+  function refreshConstraintOptions() {
+    const constraintLabel = (constraint) => {
+      const a = state.bodies.find((body) => body.id === constraint.aId);
+      const b = state.bodies.find((body) => body.id === constraint.bId);
+      return `${constraint.id}: ${a ? `#${a.id}` : "?"} ↔ ${b ? `#${b.id}` : "?"}`;
+    };
+    refreshSelect(getEl("constraintSelect"), state.constraints, (constraint) => constraint.id, constraintLabel, "New constraint");
+    if (state.selectedConstraintId != null && !state.constraints.some((constraint) => constraint.id === state.selectedConstraintId)) {
+      state.selectedConstraintId = null;
+    }
+    getEl("constraintSelect").value = state.selectedConstraintId == null ? "" : state.selectedConstraintId;
+  }
+
+  function refreshStatusSummary() {
+    const selectedBody = state.bodies.find((body) => body.id === state.selectedBodyId);
+    getEl("selectionSummary").textContent = selectedBody
+      ? `${selectedBody.fixed ? "📌 " : ""}Selected shape: #${selectedBody.id} ${selectedBody.type}`
+      : "No shapes selected";
+    getEl("constraintSummary").textContent = state.constraints.length
+      ? `${state.constraints.length} constraint${state.constraints.length === 1 ? "" : "s"}`
+      : "No constraints";
+  }
+
   function refreshUiLists() {
     refreshMaterialOptions();
     refreshBodyOptions();
+    refreshConstraintOptions();
+    refreshStatusSummary();
   }
 
   function loadMaterialIntoForm(materialId) {
@@ -568,8 +682,10 @@
     state.constraints = [];
     state.tracking = { bodyId: null, metric: "force", samples: [] };
     state.selectedBodyId = null;
+    state.selectedConstraintId = null;
     refreshUiLists();
     clearShapeForm();
+    clearConstraintForm();
   }
 
   function resetForces() {
@@ -885,6 +1001,11 @@
     const angularDamping = Math.pow(ANGULAR_DAMPING, dt * 120);
 
     for (const body of state.bodies) {
+      if (body.fixed) {
+        body.vel = v(0, 0);
+        body.angularVel = 0;
+        continue;
+      }
       const accel = mul(body.force, body.invMass);
       body.vel = add(body.vel, mul(accel, dt));
       body.angularVel += body.torque * body.invInertia * dt;
@@ -947,8 +1068,8 @@
   }
 
   function drawField() {
-    const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 72, 16, 200);
-    const resolution = clamp(Number(state.display.fieldSampleResolution) || 18, 4, arrowSpacing);
+    const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 22, 8, 200);
+    const resolution = clamp(Number(state.display.fieldSampleResolution) || 6, 2, arrowSpacing);
     const scale = clamp(Number(state.display.fieldScale) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
     const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
     const offsetStart = -((subsamples - 1) * resolution) / 2;
@@ -997,7 +1118,7 @@
 
     ctx.fillStyle = "#e2e8f0";
     ctx.font = "12px Inter, sans-serif";
-    ctx.fillText(`#${body.id}`, 8, -8);
+    ctx.fillText(`#${body.id}${body.fixed ? " 📌" : ""}`, 8, -8);
     ctx.fillText(material.name, 8, 8);
 
     if (magneticEnabled(body)) {
@@ -1098,6 +1219,7 @@
   function exportProject() {
     const payload = {
       nextBodyId,
+      nextConstraintId,
       customMaterialCounter,
       worldTime,
       display: state.display,
@@ -1116,12 +1238,14 @@
         radius: body.radius,
         materialId: body.materialId,
         massOverride: body.massOverride,
+        fixed: body.fixed,
         magnetic: body.magnetic,
         setup: body.setup,
       })),
       constraints: state.constraints,
       tracking: state.tracking,
       selectedBodyId: state.selectedBodyId,
+      selectedConstraintId: state.selectedConstraintId,
       selectedMaterialId: state.selectedMaterialId,
     };
     getEl("projectJson").value = JSON.stringify(payload, null, 2);
@@ -1134,8 +1258,8 @@
       if (!state.materials.length) state.materials = MATERIAL_PRESETS.map((material) => ({ ...material }));
 
       state.display = {
-        fieldArrowSpacing: Number(data.display?.fieldArrowSpacing) || 72,
-        fieldSampleResolution: Number(data.display?.fieldSampleResolution) || 18,
+        fieldArrowSpacing: Number(data.display?.fieldArrowSpacing) || 22,
+        fieldSampleResolution: Number(data.display?.fieldSampleResolution) || 6,
         fieldScale: Number(data.display?.fieldScale) || 1800,
       };
 
@@ -1155,6 +1279,7 @@
           radius: Number(source.radius) || 20,
           materialId: source.materialId || state.materials[0].id,
           massOverride: source.massOverride == null ? null : Number(source.massOverride),
+          fixed: Boolean(source.fixed),
           magnetic: {
             enabled: Boolean(source.magnetic?.enabled),
             model: source.magnetic?.model || "permanentDipole",
@@ -1176,6 +1301,7 @@
               radius: Number(body.setup.radius) || body.radius,
               materialId: body.setup.materialId || body.materialId,
               massOverride: body.setup.massOverride == null ? null : Number(body.setup.massOverride),
+              fixed: Boolean(body.setup.fixed),
               magnetic: {
                 enabled: Boolean(body.setup.magnetic?.enabled),
                 model: body.setup.magnetic?.model || body.magnetic.model,
@@ -1190,7 +1316,7 @@
       }
 
       state.constraints = (data.constraints || []).map((constraint) => ({
-        id: constraint.id,
+        id: String(constraint.id || `constraint-${nextConstraintId++}`),
         aId: Number(constraint.aId),
         bId: Number(constraint.bId),
         distance: Math.max(1, Number(constraint.distance) || 1),
@@ -1199,9 +1325,17 @@
       state.tracking = data.tracking || { bodyId: null, metric: "force", samples: [] };
       state.tracking.samples = [];
       nextBodyId = Math.max(Number(data.nextBodyId) || 1, ...state.bodies.map((body) => body.id + 1), 1);
+      nextConstraintId = Math.max(
+        Number(data.nextConstraintId) || 1,
+        state.constraints.reduce((maxId, constraint) => {
+          const match = /constraint-(\d+)/.exec(String(constraint.id));
+          return Math.max(maxId, match ? Number(match[1]) + 1 : 1);
+        }, 1)
+      );
       customMaterialCounter = Number(data.customMaterialCounter) || customMaterialCounter;
       worldTime = Number(data.worldTime) || 0;
       state.selectedBodyId = data.selectedBodyId || state.bodies[0]?.id || null;
+      state.selectedConstraintId = data.selectedConstraintId || null;
       state.selectedMaterialId = data.selectedMaterialId || state.materials[0]?.id || null;
       accumulator = 0;
       running = false;
@@ -1209,6 +1343,7 @@
       syncDisplayInputs();
       refreshUiLists();
       loadSelectedBodyIntoForm();
+      loadSelectedConstraintIntoForm();
     } catch (error) {
       alert(`Invalid project JSON format. Please import a valid Magnetics 2D Lab project. ${error.message}`);
     }
@@ -1221,8 +1356,8 @@
   }
 
   function applyDisplayInputs() {
-    state.display.fieldArrowSpacing = Math.max(16, Number(getEl("fieldSpacing").value) || 72);
-    state.display.fieldSampleResolution = Math.max(4, Number(getEl("fieldResolution").value) || 18);
+    state.display.fieldArrowSpacing = Math.max(8, Number(getEl("fieldSpacing").value) || 22);
+    state.display.fieldSampleResolution = Math.max(2, Number(getEl("fieldResolution").value) || 6);
     state.display.fieldScale = clamp(Number(getEl("fieldScale").value) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
   }
 
@@ -1246,6 +1381,32 @@
     getEl("shapeR").disabled = !isCircle;
   }
 
+  function setEditorView(view) {
+    const validView = ["shape", "constraint", "options"].includes(view) ? view : "shape";
+    state.editorView = validView;
+    const titles = {
+      shape: "Shape Editor",
+      constraint: "Constraint Editor",
+      options: "Options",
+    };
+    getEl("modalTitle").textContent = titles[validView];
+    for (const panel of ["shape", "constraint", "options"]) {
+      getEl(`${panel}Panel`).classList.toggle("hidden", panel !== validView);
+      getEl(`${panel}TabBtn`).classList.toggle("active", panel === validView);
+    }
+  }
+
+  function openEditorModal(view) {
+    setEditorView(view);
+    getEl("modalOverlay").classList.remove("hidden");
+    getEl("modalOverlay").setAttribute("aria-hidden", "false");
+  }
+
+  function closeEditorModal() {
+    getEl("modalOverlay").classList.add("hidden");
+    getEl("modalOverlay").setAttribute("aria-hidden", "true");
+  }
+
   function wireUi() {
     getEl("startPauseBtn").addEventListener("click", () => {
       running = !running;
@@ -1255,8 +1416,23 @@
     getEl("stepBtn").addEventListener("click", () => step(FIXED_DT));
     getEl("resetBtn").addEventListener("click", resetDynamics);
     getEl("clearProjectBtn").addEventListener("click", clearProject);
+    getEl("openShapeModalBtn").addEventListener("click", () => openEditorModal("shape"));
+    getEl("openConstraintModalBtn").addEventListener("click", () => openEditorModal("constraint"));
+    getEl("openOptionsModalBtn").addEventListener("click", () => openEditorModal("options"));
+    getEl("modalCloseBtn").addEventListener("click", closeEditorModal);
+    getEl("modalOverlay").addEventListener("click", (event) => {
+      if (event.target === getEl("modalOverlay")) closeEditorModal();
+    });
+    for (const id of ["shapeTabBtn", "constraintTabBtn", "optionsTabBtn"]) {
+      getEl(id).addEventListener("click", (event) => setEditorView(event.target.dataset.editorView));
+    }
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !getEl("modalOverlay").classList.contains("hidden")) closeEditorModal();
+    });
 
-    getEl("addShapeBtn").addEventListener("click", () => addBody(readShapeInput()));
+    getEl("addShapeBtn").addEventListener("click", () => {
+      addBody(readShapeInput());
+    });
     getEl("updateShapeBtn").addEventListener("click", () => {
       const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
       if (!body) return;
@@ -1271,6 +1447,7 @@
       if (!value) {
         state.selectedBodyId = null;
         clearShapeForm();
+        refreshStatusSummary();
         return;
       }
       setSelectedBody(Number(value));
@@ -1282,13 +1459,26 @@
       getEl("shapeRemanence").value = material.remanenceDefault.toFixed(2);
     });
 
+    getEl("constraintSelect").addEventListener("change", (event) => {
+      const value = event.target.value;
+      if (!value) {
+        state.selectedConstraintId = null;
+        clearConstraintForm();
+        return;
+      }
+      setSelectedConstraint(value);
+    });
+
     getEl("addConstraintBtn").addEventListener("click", () => {
-      addConstraint(
-        Number(getEl("constraintA").value),
-        Number(getEl("constraintB").value),
-        Number(getEl("constraintDist").value),
-        Number(getEl("constraintK").value)
-      );
+      addConstraint(readConstraintInput());
+    });
+    getEl("updateConstraintBtn").addEventListener("click", () => {
+      const constraint = state.constraints.find((entry) => entry.id === state.selectedConstraintId);
+      if (!constraint) return;
+      updateConstraintFromInput(constraint, readConstraintInput());
+    });
+    getEl("deleteConstraintBtn").addEventListener("click", () => {
+      if (state.selectedConstraintId != null) removeConstraint(state.selectedConstraintId);
     });
 
     getEl("materialSelect").addEventListener("change", (event) => loadMaterialIntoForm(event.target.value));
@@ -1327,14 +1517,19 @@
       const scaleY = simCanvas.height / rect.height;
       const point = v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
       const body = pickBody(point);
-      if (body) setSelectedBody(body.id);
+      if (body) {
+        setSelectedBody(body.id);
+        refreshStatusSummary();
+      }
     });
   }
 
   wireUi();
   refreshUiLists();
   clearShapeForm();
+  clearConstraintForm();
   syncDisplayInputs();
+  setEditorView("shape");
 
   addBody({
     type: "rectangle",
@@ -1387,7 +1582,7 @@
     magneticStrength: 8,
     magneticRemanence: 0.12,
   });
-  addConstraint(1, 2, 250, 4.2);
+  addConstraint({ aId: 1, bId: 2, distance: 250, stiffness: 4.2 });
   setSelectedBody(1);
 
   requestAnimationFrame(frame);

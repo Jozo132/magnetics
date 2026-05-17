@@ -11,6 +11,6 @@ Open `index.html` in a browser.
 - Draw 2D solid shapes (rectangles and circles) with explicit dimensions
 - Add constraints (distance joints) between bodies
 - Optional magnetic properties per body
-- Real-time simulation with visible magnetic fields, forces, and torques
+- Real-time simulation with visible magnetic fields, forces, and torques, now using denser default field sampling for higher-resolution magnetics
 - Track force/torque/pose metrics and plot over time
 - Import/export complete projects as JSON
