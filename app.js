@@ -28,6 +28,7 @@
   const POSITION_CORRECTION_SLOP = 0.01;
   const DEFAULT_RESTITUTION = 0.32;
   const DEFAULT_FRICTION = 0.42;
+  const LEFT_MOUSE_BUTTON = 0;
   const RIGHT_MOUSE_BUTTON = 2;
   const SOUTH_POLE_COLOR = { r: 96, g: 165, b: 250 };
   const NORTH_POLE_COLOR = { r: 248, g: 113, b: 113 };
@@ -462,7 +463,6 @@
   }
 
   function clearShapeForm() {
-    getEl("bodySelect").value = "";
     getEl("shapeType").value = "rectangle";
     getEl("shapeX").value = 180;
     getEl("shapeY").value = 180;
@@ -484,8 +484,6 @@
 
   function setSelectedBody(bodyId) {
     state.selectedBodyId = bodyId == null ? null : Number(bodyId);
-    const select = getEl("bodySelect");
-    select.value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
     loadSelectedBodyIntoForm();
     refreshShapeTable();
     refreshStatusSummary();
@@ -528,7 +526,6 @@
   }
 
   function populateConstraintForm(constraint) {
-    getEl("constraintSelect").value = constraint.id;
     getEl("constraintA").value = String(constraint.aId);
     getEl("constraintB").value = String(constraint.bId);
     getEl("constraintDist").value = constraint.distance.toFixed(2);
@@ -536,7 +533,6 @@
   }
 
   function clearConstraintForm() {
-    getEl("constraintSelect").value = "";
     const [firstBody, secondBody] = state.bodies;
     getEl("constraintA").value = firstBody ? String(firstBody.id) : "";
 
@@ -579,7 +575,6 @@
 
   function refreshBodyOptions() {
     const bodyLabel = (body) => `${body.fixed ? "📌 " : ""}#${body.id} ${body.type} (${materialById(body.materialId).name})`;
-    refreshSelect(getEl("bodySelect"), state.bodies, (body) => body.id, bodyLabel, "New body");
     refreshSelect(getEl("constraintA"), state.bodies, (body) => body.id, bodyLabel);
     refreshSelect(getEl("constraintB"), state.bodies, (body) => body.id, bodyLabel);
     refreshSelect(getEl("trackBody"), state.bodies, (body) => body.id, bodyLabel);
@@ -591,21 +586,13 @@
       state.tracking.bodyId = state.bodies[0]?.id ?? null;
     }
 
-    getEl("bodySelect").value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
     getEl("trackBody").value = state.tracking.bodyId == null ? "" : String(state.tracking.bodyId);
   }
 
   function refreshConstraintOptions() {
-    const constraintLabel = (constraint) => {
-      const a = state.bodies.find((body) => body.id === constraint.aId);
-      const b = state.bodies.find((body) => body.id === constraint.bId);
-      return `${constraint.id}: ${a ? `#${a.id}` : "?"} ↔ ${b ? `#${b.id}` : "?"}`;
-    };
-    refreshSelect(getEl("constraintSelect"), state.constraints, (constraint) => constraint.id, constraintLabel, "New constraint");
     if (state.selectedConstraintId != null && !state.constraints.some((constraint) => constraint.id === state.selectedConstraintId)) {
       state.selectedConstraintId = null;
     }
-    getEl("constraintSelect").value = state.selectedConstraintId == null ? "" : state.selectedConstraintId;
   }
 
   function appendTableCell(row, text, className = "") {
@@ -1261,7 +1248,7 @@
         const magnitude = len(field);
         if (magnitude < threshold) continue;
         const strengthRatio = clamp(
-          (magnitude - threshold) / Math.max(threshold || 0.01, 0.01) / FIELD_STRENGTH_RATIO_DIVISOR,
+          (magnitude - threshold) / (threshold || 0.01) / FIELD_STRENGTH_RATIO_DIVISOR,
           0.14,
           1
         );
@@ -1636,16 +1623,6 @@
       if (state.selectedBodyId != null) removeBody(state.selectedBodyId);
     });
 
-    getEl("bodySelect").addEventListener("change", (event) => {
-      const value = event.target.value;
-      if (!value) {
-        state.selectedBodyId = null;
-        clearShapeForm();
-        refreshStatusSummary();
-        return;
-      }
-      setSelectedBody(Number(value));
-    });
     getEl("shapeTableBody").addEventListener("click", (event) => {
       const actionButton = event.target.closest("button[data-action]");
       if (actionButton) {
@@ -1662,16 +1639,6 @@
     getEl("shapeMaterial").addEventListener("change", () => {
       const material = materialById(getEl("shapeMaterial").value);
       getEl("shapeRemanence").value = material.remanenceDefault.toFixed(2);
-    });
-
-    getEl("constraintSelect").addEventListener("change", (event) => {
-      const value = event.target.value;
-      if (!value) {
-        state.selectedConstraintId = null;
-        clearConstraintForm();
-        return;
-      }
-      setSelectedConstraint(value);
     });
 
     getEl("newConstraintBtn").addEventListener("click", () => {
@@ -1768,7 +1735,7 @@
     });
 
     simCanvas.addEventListener("click", (event) => {
-      if (state.view.isPanning || event.button !== 0) return;
+      if (state.view.isPanning || event.button !== LEFT_MOUSE_BUTTON) return;
       const body = pickBody(worldPointFromMouseEvent(event));
       if (body) {
         setSelectedBody(body.id);
