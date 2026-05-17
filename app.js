@@ -7,6 +7,7 @@
   const K_MAGNET = 9000;
   const DRAG = 0.992;
   const ROT_DRAG = 0.99;
+  const ANGULAR_INERTIA_FACTOR = 0.5;
   const FIXED_DT = 1 / 120;
   const MAX_STEPS_PER_FRAME = 8;
 
@@ -138,7 +139,7 @@
       b.vel = mul(b.vel, DRAG);
       b.pos = add(b.pos, mul(b.vel, dt));
 
-      b.angularVel += b.torque * b.invMass * 0.5 * dt;
+      b.angularVel += b.torque * b.invMass * ANGULAR_INERTIA_FACTOR * dt;
       b.angularVel *= ROT_DRAG;
       b.angle += b.angularVel * dt;
       b.magneticDirection = b.angle;
@@ -358,7 +359,7 @@
       }
       for (const c of data.constraints || []) state.constraints.push(c);
     } catch (err) {
-      alert(`Invalid project JSON. Expected exported Magnetics 2D Lab JSON format. Parser details: ${err.message}`);
+      alert("Invalid project JSON format. Please import a valid Magnetics 2D Lab exported project.");
     }
   }
 
