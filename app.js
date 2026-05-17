@@ -504,7 +504,12 @@
     getEl("constraintSelect").value = "";
     const [firstBody, secondBody] = state.bodies;
     getEl("constraintA").value = firstBody ? String(firstBody.id) : "";
-    getEl("constraintB").value = secondBody ? String(secondBody.id) : firstBody ? String(firstBody.id) : "";
+
+    let bodyBValue = "";
+    if (secondBody) bodyBValue = String(secondBody.id);
+    else if (firstBody) bodyBValue = String(firstBody.id);
+    getEl("constraintB").value = bodyBValue;
+
     getEl("constraintDist").value = 120;
     getEl("constraintK").value = 8;
   }
@@ -1427,7 +1432,6 @@
 
     getEl("addShapeBtn").addEventListener("click", () => {
       addBody(readShapeInput());
-      openEditorModal("shape");
     });
     getEl("updateShapeBtn").addEventListener("click", () => {
       const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
