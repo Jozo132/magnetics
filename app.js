@@ -25,6 +25,7 @@
   const FIELD_ARROW_LENGTH_SCALE_DIVISOR = 1500;
   const FIELD_STRENGTH_RATIO_DIVISOR = 5;
   const ARROW_STRENGTH_NORMALIZER = 18;
+  const MIN_ARROW_STRENGTH_SCALE = 0.18;
   const MIN_POLE_INFLUENCE_DISTANCE_SQUARED = 36;
   const POSITION_CORRECTION_PERCENT = 0.72;
   const POSITION_CORRECTION_SLOP = 0.01;
@@ -32,6 +33,7 @@
   const DEFAULT_FRICTION = 0.42;
   const LEFT_MOUSE_BUTTON = 0;
   const RIGHT_MOUSE_BUTTON = 2;
+  const DEFAULT_FIELD_ARROW_COLOR = "rgba(147,197,253,0.5)";
   const SOUTH_POLE_COLOR = { r: 96, g: 165, b: 250 };
   const NORTH_POLE_COLOR = { r: 248, g: 113, b: 113 };
 
@@ -884,7 +886,7 @@
   function fieldArrowColorAtPoint(point) {
     const { northInfluence, southInfluence } = magneticPoleBiasAtPoint(point);
     const totalInfluence = northInfluence + southInfluence;
-    if (totalInfluence <= 1e-6) return "rgba(147,197,253,0.5)";
+    if (totalInfluence <= 1e-6) return DEFAULT_FIELD_ARROW_COLOR;
     const blend = clamp((northInfluence - southInfluence) / totalInfluence, -1, 1);
     const northDominanceRatio = (blend + 1) * 0.5;
     const red = Math.round(lerp(SOUTH_POLE_COLOR.r, NORTH_POLE_COLOR.r, northDominanceRatio));
@@ -1201,7 +1203,11 @@
   function drawArrow(base, vector, color, strengthScale = null) {
     const magnitude = len(vector);
     if (magnitude < 0.001) return;
-    const normalizedStrength = clamp(strengthScale == null ? magnitude / ARROW_STRENGTH_NORMALIZER : strengthScale, 0.18, 1);
+    const normalizedStrength = clamp(
+      strengthScale == null ? magnitude / ARROW_STRENGTH_NORMALIZER : strengthScale,
+      MIN_ARROW_STRENGTH_SCALE,
+      1
+    );
     const strokeWidth = lerp(0.75, 2.3, normalizedStrength);
     const headLength = lerp(4, 10, normalizedStrength);
     const headWidth = lerp(2, 5.5, normalizedStrength);
@@ -1239,6 +1245,8 @@
 
     for (let y = arrowSpacing / 2; y < simCanvas.height; y += arrowSpacing) {
       for (let x = arrowSpacing / 2; x < simCanvas.width; x += arrowSpacing) {
+        const screenPoint = v(x, y);
+        const worldPoint = screenToWorld(screenPoint);
         let field = v(0, 0);
         let count = 0;
         for (let sy = 0; sy < subsamples; sy += 1) {
@@ -1251,16 +1259,15 @@
         field = mul(field, 1 / count);
         const magnitude = len(field);
         if (magnitude < threshold) continue;
-        const strengthRatio = clamp(
-          (magnitude - threshold) / (threshold || 0.01) / FIELD_STRENGTH_RATIO_DIVISOR,
-          0.14,
-          1
-        );
         const arrowLength =
           clamp(magnitude * (scale / FIELD_ARROW_LENGTH_SCALE_DIVISOR), MIN_FIELD_ARROW_LENGTH, MAX_FIELD_ARROW_LENGTH) *
-          lerp(0.7, 1, strengthRatio);
-        const worldPoint = screenToWorld(v(x, y));
-        drawArrow(v(x, y), mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
+          lerp(
+            0.7,
+            1,
+            clamp((magnitude - threshold) / Math.max(FIELD_STRENGTH_RATIO_DIVISOR, 1), MIN_ARROW_STRENGTH_SCALE, 1)
+          );
+        const strengthRatio = clamp(arrowLength / MAX_FIELD_ARROW_LENGTH, MIN_ARROW_STRENGTH_SCALE, 1);
+        drawArrow(worldToScreen(worldPoint), mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
       }
     }
   }
