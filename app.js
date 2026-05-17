@@ -174,7 +174,11 @@
     body.radius = clamp(Number(body.radius) || 20, 3, 300);
     body.width = clamp(Number(body.width) || 40, 5, simCanvas.width);
     body.height = clamp(Number(body.height) || 40, 5, simCanvas.height);
-    body.massOverride = body.massOverride == null || body.massOverride === "" ? null : Math.max(0.05, Number(body.massOverride) || 0.05);
+    if (body.massOverride == null || body.massOverride === "") body.massOverride = null;
+    else {
+      const parsedMassOverride = Number(body.massOverride);
+      body.massOverride = Number.isFinite(parsedMassOverride) ? Math.max(0.05, parsedMassOverride) : 0.05;
+    }
 
     const autoMass = Math.max(0.05, bodyArea(body) * material.density * MASS_SCALE);
     body.mass = body.massOverride == null ? autoMass : body.massOverride;
@@ -1266,7 +1270,7 @@
     getEl("shapeType").addEventListener("change", toggleShapeInputs);
     getEl("shapeMaterial").addEventListener("change", () => {
       const material = materialById(getEl("shapeMaterial").value);
-      if (!getEl("shapeMass").value.trim()) getEl("shapeRemanence").value = material.remanenceDefault.toFixed(2);
+      getEl("shapeRemanence").value = material.remanenceDefault.toFixed(2);
     });
 
     getEl("addConstraintBtn").addEventListener("click", () => {
