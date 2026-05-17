@@ -4,7 +4,7 @@ A reusable deterministic 2D physics + magnetics simulation web app.
 
 ## Run
 
-Open `/home/runner/work/magnetics/magnetics/index.html` in a browser.
+Open `index.html` in a browser.
 
 ## Features
 

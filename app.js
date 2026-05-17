@@ -358,7 +358,7 @@
       }
       for (const c of data.constraints || []) state.constraints.push(c);
     } catch (err) {
-      alert(`Invalid project JSON: ${err.message}`);
+      alert(`Invalid project JSON. Expected exported Magnetics 2D Lab JSON format. Parser details: ${err.message}`);
     }
   }
 
