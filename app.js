@@ -115,6 +115,7 @@
       fieldArrowSpacing: 22,
       fieldSampleResolution: 6,
       fieldScale: 1800,
+      fieldThreshold: 0.01,
     },
     tracking: {
       bodyId: null,
@@ -125,6 +126,12 @@
     selectedConstraintId: null,
     selectedMaterialId: "steel",
     editorView: "shape",
+    view: {
+      pan: { x: 0, y: 0 },
+      isPanning: false,
+      pointerId: null,
+      lastPointerClient: { x: 0, y: 0 },
+    },
   };
 
   const v = (x = 0, y = 0) => ({ x, y });
@@ -141,6 +148,7 @@
     return v(a.x / magnitude, a.y / magnitude);
   };
   const perp = (a) => v(-a.y, a.x);
+  const lerp = (a, b, t) => a + (b - a) * t;
   const rotate = (point, angle) => {
     const c = Math.cos(angle);
     const s = Math.sin(angle);
@@ -151,6 +159,25 @@
 
   function getEl(id) {
     return document.getElementById(id);
+  }
+
+  function screenToWorld(point) {
+    return sub(point, state.view.pan);
+  }
+
+  function worldToScreen(point) {
+    return add(point, state.view.pan);
+  }
+
+  function canvasPointFromMouseEvent(event) {
+    const rect = simCanvas.getBoundingClientRect();
+    const scaleX = simCanvas.width / rect.width;
+    const scaleY = simCanvas.height / rect.height;
+    return v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
+  }
+
+  function worldPointFromMouseEvent(event) {
+    return screenToWorld(canvasPointFromMouseEvent(event));
   }
 
   function materialById(materialId) {
@@ -453,6 +480,7 @@
     const select = getEl("bodySelect");
     select.value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
     loadSelectedBodyIntoForm();
+    refreshShapeTable();
     refreshStatusSummary();
   }
 
@@ -517,6 +545,7 @@
   function setSelectedConstraint(constraintId) {
     state.selectedConstraintId = constraintId || null;
     loadSelectedConstraintIntoForm();
+    refreshConstraintTable();
   }
 
   function loadSelectedConstraintIntoForm() {
@@ -572,6 +601,72 @@
     getEl("constraintSelect").value = state.selectedConstraintId == null ? "" : state.selectedConstraintId;
   }
 
+  function refreshShapeTable() {
+    const tbody = getEl("shapeTableBody");
+    tbody.innerHTML = "";
+    if (!state.bodies.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="empty-cell" colspan="5">No shapes yet.</td>';
+      tbody.appendChild(row);
+      return;
+    }
+
+    for (const body of state.bodies) {
+      const row = document.createElement("tr");
+      if (body.id === state.selectedBodyId) row.classList.add("selected");
+      const material = materialById(body.materialId);
+      const magneticLabel = magneticEnabled(body)
+        ? `${body.magnetic.model === "inducedDipole" ? "Induced" : "Permanent"} · ${body.magnetic.polarity === -1 ? "S→N" : "N→S"}`
+        : "No";
+      row.innerHTML = `
+        <td>#${body.id}${body.fixed ? " 📌" : ""}</td>
+        <td>${body.type}</td>
+        <td>${material.name}</td>
+        <td>${magneticLabel}</td>
+        <td>
+          <div class="table-actions">
+            <button type="button" data-action="edit-body" data-body-id="${body.id}">Edit</button>
+            <button type="button" data-action="delete-body" data-body-id="${body.id}">Delete</button>
+          </div>
+        </td>
+      `;
+      row.dataset.bodyId = String(body.id);
+      tbody.appendChild(row);
+    }
+  }
+
+  function refreshConstraintTable() {
+    const tbody = getEl("constraintTableBody");
+    tbody.innerHTML = "";
+    if (!state.constraints.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="empty-cell" colspan="5">No constraints yet.</td>';
+      tbody.appendChild(row);
+      return;
+    }
+
+    for (const constraint of state.constraints) {
+      const row = document.createElement("tr");
+      if (constraint.id === state.selectedConstraintId) row.classList.add("selected");
+      const a = state.bodies.find((body) => body.id === constraint.aId);
+      const b = state.bodies.find((body) => body.id === constraint.bId);
+      row.innerHTML = `
+        <td>${constraint.id}</td>
+        <td>${a ? `#${a.id}` : "?"}</td>
+        <td>${b ? `#${b.id}` : "?"}</td>
+        <td>${constraint.distance.toFixed(2)}</td>
+        <td>
+          <div class="table-actions">
+            <button type="button" data-action="edit-constraint" data-constraint-id="${constraint.id}">Edit</button>
+            <button type="button" data-action="delete-constraint" data-constraint-id="${constraint.id}">Delete</button>
+          </div>
+        </td>
+      `;
+      row.dataset.constraintId = constraint.id;
+      tbody.appendChild(row);
+    }
+  }
+
   function refreshStatusSummary() {
     const selectedBody = state.bodies.find((body) => body.id === state.selectedBodyId);
     getEl("selectionSummary").textContent = selectedBody
@@ -586,6 +681,8 @@
     refreshMaterialOptions();
     refreshBodyOptions();
     refreshConstraintOptions();
+    refreshShapeTable();
+    refreshConstraintTable();
     refreshStatusSummary();
   }
 
@@ -683,6 +780,9 @@
     state.tracking = { bodyId: null, metric: "force", samples: [] };
     state.selectedBodyId = null;
     state.selectedConstraintId = null;
+    state.view.pan = v(0, 0);
+    state.view.isPanning = false;
+    state.view.pointerId = null;
     refreshUiLists();
     clearShapeForm();
     clearConstraintForm();
@@ -741,6 +841,44 @@
       field = add(field, dipoleFieldFromBodyAtPoint(body, point));
     }
     return field;
+  }
+
+  function magneticPolePositions(body) {
+    const axis = magneticAxis(body);
+    const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.5;
+    const northSign = body.magnetic.polarity === -1 ? -1 : 1;
+    return {
+      north: add(body.pos, mul(axis, extent * northSign)),
+      south: add(body.pos, mul(axis, -extent * northSign)),
+    };
+  }
+
+  function magneticPoleBiasAtPoint(point) {
+    let northInfluence = 0;
+    let southInfluence = 0;
+    for (const body of state.bodies) {
+      if (!magneticEnabled(body)) continue;
+      const strength = Math.max(1, body.magnetic.strength * Math.max(0.05, body.magnetic.remanence));
+      const poles = magneticPolePositions(body);
+      const northDistance = Math.max(36, len(sub(point, poles.north)) ** 2);
+      const southDistance = Math.max(36, len(sub(point, poles.south)) ** 2);
+      northInfluence += strength / northDistance;
+      southInfluence += strength / southDistance;
+    }
+    return { northInfluence, southInfluence };
+  }
+
+  function fieldArrowColorAtPoint(point) {
+    const { northInfluence, southInfluence } = magneticPoleBiasAtPoint(point);
+    const totalInfluence = northInfluence + southInfluence;
+    if (totalInfluence <= 1e-6) return "rgba(147,197,253,0.5)";
+    const blend = clamp((northInfluence - southInfluence) / totalInfluence, -1, 1);
+    const towardNorth = (blend + 1) * 0.5;
+    const red = Math.round(lerp(96, 248, towardNorth));
+    const green = Math.round(lerp(165, 113, towardNorth));
+    const blue = Math.round(lerp(250, 113, towardNorth));
+    const alpha = lerp(0.42, 0.82, Math.abs(blend));
+    return `rgba(${red},${green},${blue},${alpha.toFixed(3)})`;
   }
 
   function applyMagnetics() {
@@ -1047,12 +1185,17 @@
     sampleTracking();
   }
 
-  function drawArrow(base, vector, color) {
+  function drawArrow(base, vector, color, strengthScale = null) {
     const magnitude = len(vector);
     if (magnitude < 0.001) return;
+    const normalizedStrength = clamp(strengthScale == null ? magnitude / 18 : strengthScale, 0.18, 1);
+    const strokeWidth = lerp(0.75, 2.3, normalizedStrength);
+    const headLength = lerp(4, 10, normalizedStrength);
+    const headWidth = lerp(2, 5.5, normalizedStrength);
     const target = add(base, vector);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
+    ctx.lineWidth = strokeWidth;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
     ctx.lineTo(target.x, target.y);
@@ -1061,8 +1204,14 @@
     const normal = perp(direction);
     ctx.beginPath();
     ctx.moveTo(target.x, target.y);
-    ctx.lineTo(target.x - direction.x * 8 + normal.x * 4, target.y - direction.y * 8 + normal.y * 4);
-    ctx.lineTo(target.x - direction.x * 8 - normal.x * 4, target.y - direction.y * 8 - normal.y * 4);
+    ctx.lineTo(
+      target.x - direction.x * headLength + normal.x * headWidth,
+      target.y - direction.y * headLength + normal.y * headWidth
+    );
+    ctx.lineTo(
+      target.x - direction.x * headLength - normal.x * headWidth,
+      target.y - direction.y * headLength - normal.y * headWidth
+    );
     ctx.closePath();
     ctx.fill();
   }
@@ -1071,8 +1220,10 @@
     const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 22, 8, 200);
     const resolution = clamp(Number(state.display.fieldSampleResolution) || 6, 2, arrowSpacing);
     const scale = clamp(Number(state.display.fieldScale) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
+    const threshold = Math.max(0, Number(state.display.fieldThreshold) || 0);
     const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
     const offsetStart = -((subsamples - 1) * resolution) / 2;
+    const arrowMaxLength = 26;
 
     for (let y = arrowSpacing / 2; y < simCanvas.height; y += arrowSpacing) {
       for (let x = arrowSpacing / 2; x < simCanvas.width; x += arrowSpacing) {
@@ -1080,16 +1231,18 @@
         let count = 0;
         for (let sy = 0; sy < subsamples; sy += 1) {
           for (let sx = 0; sx < subsamples; sx += 1) {
-            const sample = v(x + offsetStart + sx * resolution, y + offsetStart + sy * resolution);
+            const sample = screenToWorld(v(x + offsetStart + sx * resolution, y + offsetStart + sy * resolution));
             field = add(field, magneticFieldAtPoint(sample));
             count += 1;
           }
         }
         field = mul(field, 1 / count);
         const magnitude = len(field);
-        if (magnitude < 0.002) continue;
-        const arrowLength = Math.min(26, magnitude * (scale / 1500));
-        drawArrow(v(x, y), mul(unit(field), arrowLength), "rgba(147,197,253,0.58)");
+        if (magnitude < threshold) continue;
+        const strengthRatio = clamp((magnitude - threshold) / Math.max(threshold || 0.01, 0.01) / 5, 0.14, 1);
+        const arrowLength = clamp(magnitude * (scale / 1500), 3.5, arrowMaxLength) * lerp(0.7, 1, strengthRatio);
+        const worldPoint = screenToWorld(v(x, y));
+        drawArrow(v(x, y), mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
       }
     }
   }
@@ -1155,6 +1308,8 @@
     ctx.clearRect(0, 0, simCanvas.width, simCanvas.height);
     drawField();
 
+    ctx.save();
+    ctx.translate(state.view.pan.x, state.view.pan.y);
     ctx.strokeStyle = "#22d3ee";
     ctx.lineWidth = 1;
     for (const constraint of state.constraints) {
@@ -1168,6 +1323,7 @@
     }
 
     for (const body of state.bodies) drawBody(body);
+    ctx.restore();
   }
 
   function renderPlot() {
@@ -1261,6 +1417,7 @@
         fieldArrowSpacing: Number(data.display?.fieldArrowSpacing) || 22,
         fieldSampleResolution: Number(data.display?.fieldSampleResolution) || 6,
         fieldScale: Number(data.display?.fieldScale) || 1800,
+        fieldThreshold: Math.max(0, Number(data.display?.fieldThreshold) || 0.01),
       };
 
       state.bodies = [];
@@ -1337,6 +1494,9 @@
       state.selectedBodyId = data.selectedBodyId || state.bodies[0]?.id || null;
       state.selectedConstraintId = data.selectedConstraintId || null;
       state.selectedMaterialId = data.selectedMaterialId || state.materials[0]?.id || null;
+      state.view.pan = v(0, 0);
+      state.view.isPanning = false;
+      state.view.pointerId = null;
       accumulator = 0;
       running = false;
       getEl("startPauseBtn").textContent = "Start";
@@ -1353,12 +1513,14 @@
     getEl("fieldSpacing").value = state.display.fieldArrowSpacing;
     getEl("fieldResolution").value = state.display.fieldSampleResolution;
     getEl("fieldScale").value = state.display.fieldScale;
+    getEl("fieldThreshold").value = state.display.fieldThreshold;
   }
 
   function applyDisplayInputs() {
     state.display.fieldArrowSpacing = Math.max(8, Number(getEl("fieldSpacing").value) || 22);
     state.display.fieldSampleResolution = Math.max(2, Number(getEl("fieldResolution").value) || 6);
     state.display.fieldScale = clamp(Number(getEl("fieldScale").value) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
+    state.display.fieldThreshold = Math.max(0, Number(getEl("fieldThreshold").value) || 0);
   }
 
   function pointInBody(point, body) {
@@ -1433,6 +1595,12 @@
     getEl("addShapeBtn").addEventListener("click", () => {
       addBody(readShapeInput());
     });
+    getEl("newShapeBtn").addEventListener("click", () => {
+      state.selectedBodyId = null;
+      clearShapeForm();
+      refreshShapeTable();
+      refreshStatusSummary();
+    });
     getEl("updateShapeBtn").addEventListener("click", () => {
       const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
       if (!body) return;
@@ -1452,6 +1620,17 @@
       }
       setSelectedBody(Number(value));
     });
+    getEl("shapeTableBody").addEventListener("click", (event) => {
+      const actionButton = event.target.closest("button[data-action]");
+      if (actionButton) {
+        const bodyId = Number(actionButton.dataset.bodyId);
+        if (actionButton.dataset.action === "edit-body") setSelectedBody(bodyId);
+        if (actionButton.dataset.action === "delete-body") removeBody(bodyId);
+        return;
+      }
+      const row = event.target.closest("tr[data-body-id]");
+      if (row) setSelectedBody(Number(row.dataset.bodyId));
+    });
 
     getEl("shapeType").addEventListener("change", toggleShapeInputs);
     getEl("shapeMaterial").addEventListener("change", () => {
@@ -1469,6 +1648,11 @@
       setSelectedConstraint(value);
     });
 
+    getEl("newConstraintBtn").addEventListener("click", () => {
+      state.selectedConstraintId = null;
+      clearConstraintForm();
+      refreshConstraintTable();
+    });
     getEl("addConstraintBtn").addEventListener("click", () => {
       addConstraint(readConstraintInput());
     });
@@ -1479,6 +1663,17 @@
     });
     getEl("deleteConstraintBtn").addEventListener("click", () => {
       if (state.selectedConstraintId != null) removeConstraint(state.selectedConstraintId);
+    });
+    getEl("constraintTableBody").addEventListener("click", (event) => {
+      const actionButton = event.target.closest("button[data-action]");
+      if (actionButton) {
+        const constraintId = actionButton.dataset.constraintId;
+        if (actionButton.dataset.action === "edit-constraint") setSelectedConstraint(constraintId);
+        if (actionButton.dataset.action === "delete-constraint") removeConstraint(constraintId);
+        return;
+      }
+      const row = event.target.closest("tr[data-constraint-id]");
+      if (row) setSelectedConstraint(row.dataset.constraintId);
     });
 
     getEl("materialSelect").addEventListener("change", (event) => loadMaterialIntoForm(event.target.value));
@@ -1495,7 +1690,7 @@
     getEl("saveMaterialBtn").addEventListener("click", saveMaterial);
     getEl("deleteMaterialBtn").addEventListener("click", deleteMaterial);
 
-    for (const id of ["fieldSpacing", "fieldResolution", "fieldScale"]) {
+    for (const id of ["fieldSpacing", "fieldResolution", "fieldScale", "fieldThreshold"]) {
       getEl(id).addEventListener("input", applyDisplayInputs);
     }
 
@@ -1511,12 +1706,44 @@
     getEl("exportBtn").addEventListener("click", exportProject);
     getEl("importBtn").addEventListener("click", importProject);
 
-    simCanvas.addEventListener("click", (event) => {
+    simCanvas.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
+    simCanvas.addEventListener("mousedown", (event) => {
+      if (event.button !== 2) return;
+      event.preventDefault();
+      state.view.isPanning = true;
+      state.view.pointerId = event.button;
+      state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
+      simCanvas.classList.add("is-panning");
+    });
+    window.addEventListener("mousemove", (event) => {
+      if (!state.view.isPanning || state.view.pointerId !== 2) return;
       const rect = simCanvas.getBoundingClientRect();
       const scaleX = simCanvas.width / rect.width;
       const scaleY = simCanvas.height / rect.height;
-      const point = v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
-      const body = pickBody(point);
+      state.view.pan = add(
+        state.view.pan,
+        v((event.clientX - state.view.lastPointerClient.x) * scaleX, (event.clientY - state.view.lastPointerClient.y) * scaleY)
+      );
+      state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
+    });
+    window.addEventListener("mouseup", (event) => {
+      if (event.button !== 2) return;
+      state.view.isPanning = false;
+      state.view.pointerId = null;
+      simCanvas.classList.remove("is-panning");
+    });
+    window.addEventListener("blur", () => {
+      if (!state.view.isPanning) return;
+      state.view.isPanning = false;
+      state.view.pointerId = null;
+      simCanvas.classList.remove("is-panning");
+    });
+
+    simCanvas.addEventListener("click", (event) => {
+      if (state.view.isPanning || event.button !== 0) return;
+      const body = pickBody(worldPointFromMouseEvent(event));
       if (body) {
         setSelectedBody(body.id);
         refreshStatusSummary();
