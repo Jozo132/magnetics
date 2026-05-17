@@ -11,7 +11,7 @@ body {
 
 main {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: 420px 1fr;
   min-height: 100vh;
 }
 
@@ -33,7 +33,7 @@ h1 {
 
 h2 {
   font-size: 1rem;
-  margin-top: 14px;
+  margin-top: 16px;
 }
 
 .grid {
@@ -55,6 +55,10 @@ label {
   margin: 8px 0;
 }
 
+.wrap {
+  flex-wrap: wrap;
+}
+
 input,
 select,
 button,
@@ -70,9 +74,14 @@ button {
   cursor: pointer;
 }
 
+button:hover {
+  border-color: #22d3ee;
+}
+
 textarea {
   width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
 }
 
 .workspace {
@@ -85,4 +94,6 @@ textarea {
 canvas {
   border: 1px solid #334155;
   background: #020617;
+  width: 100%;
+  max-width: 100%;
 }
