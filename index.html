@@ -10,39 +10,96 @@
     <main>
       <section class="panel">
         <h1>Magnetics 2D Lab</h1>
-        <div class="row">
+        <div class="row wrap">
           <button id="startPauseBtn">Start</button>
           <button id="stepBtn">Step</button>
-          <button id="resetBtn">Reset Simulation</button>
+          <button id="resetBtn">Reset Dynamics</button>
+          <button id="clearProjectBtn">Clear Project</button>
         </div>
 
-        <h2>Add Shape</h2>
+        <h2>Shape Editor</h2>
         <div class="grid">
-          <label>Type <select id="shapeType"><option value="rectangle">Rectangle</option><option value="circle">Circle</option></select></label>
+          <label>Selected Body
+            <select id="bodySelect"></select>
+          </label>
+          <label>Type
+            <select id="shapeType">
+              <option value="rectangle">Rectangle</option>
+              <option value="circle">Circle</option>
+            </select>
+          </label>
           <label>X <input id="shapeX" type="number" value="180" /></label>
           <label>Y <input id="shapeY" type="number" value="180" /></label>
-          <label>Width <input id="shapeW" type="number" value="90" /></label>
-          <label>Height <input id="shapeH" type="number" value="50" /></label>
-          <label>Radius <input id="shapeR" type="number" value="28" /></label>
-          <label>Mass <input id="shapeMass" type="number" value="1" min="0.1" step="0.1" /></label>
+          <label>Width <input id="shapeW" type="number" value="90" min="5" /></label>
+          <label>Height <input id="shapeH" type="number" value="50" min="5" /></label>
+          <label>Radius <input id="shapeR" type="number" value="28" min="3" /></label>
           <label>Angle (deg) <input id="shapeAngle" type="number" value="0" /></label>
-          <label>Magnetic <input id="shapeMagnetic" type="checkbox" /></label>
-          <label>Mag Moment <input id="shapeMoment" type="number" value="40" /></label>
+          <label>Mass Override <input id="shapeMass" type="number" value="" min="0.05" step="0.05" placeholder="auto" /></label>
+          <label>Material
+            <select id="shapeMaterial"></select>
+          </label>
+          <label>Magnetic
+            <input id="shapeMagnetic" type="checkbox" />
+          </label>
+          <label>Magnetization Model
+            <select id="shapeMagModel">
+              <option value="permanentDipole">Permanent dipole</option>
+              <option value="inducedDipole">Induced dipole</option>
+            </select>
+          </label>
+          <label>Magnetic Offset (deg) <input id="shapeMagAngle" type="number" value="0" /></label>
+          <label>Polarity
+            <select id="shapePolarity">
+              <option value="1">North → South</option>
+              <option value="-1">South → North</option>
+            </select>
+          </label>
+          <label>Magnetic Strength <input id="shapeMoment" type="number" value="40" step="1" /></label>
+          <label>Remanence <input id="shapeRemanence" type="number" value="1.2" step="0.05" min="0" /></label>
         </div>
-        <button id="addShapeBtn">Add Shape</button>
+        <div class="row wrap">
+          <button id="addShapeBtn">Add Shape</button>
+          <button id="updateShapeBtn">Update Selected</button>
+          <button id="deleteShapeBtn">Delete Selected</button>
+        </div>
 
-        <h2>Add Constraint</h2>
+        <h2>Constraint Editor</h2>
         <div class="grid">
-          <label>Body A <input id="constraintA" type="number" value="1" min="1" /></label>
-          <label>Body B <input id="constraintB" type="number" value="2" min="1" /></label>
+          <label>Body A <select id="constraintA"></select></label>
+          <label>Body B <select id="constraintB"></select></label>
           <label>Distance <input id="constraintDist" type="number" value="120" min="1" /></label>
           <label>Stiffness <input id="constraintK" type="number" value="8" step="0.1" min="0.1" /></label>
         </div>
         <button id="addConstraintBtn">Add Constraint</button>
 
+        <h2>Materials</h2>
+        <div class="grid">
+          <label>Material
+            <select id="materialSelect"></select>
+          </label>
+          <label>Name <input id="materialName" type="text" value="Custom Alloy" /></label>
+          <label>Density <input id="materialDensity" type="number" value="7.8" step="0.1" min="0.01" /></label>
+          <label>Permeability <input id="materialPermeability" type="number" value="400" step="0.1" min="0.01" /></label>
+          <label>Susceptibility <input id="materialSusceptibility" type="number" value="0.9" step="0.01" /></label>
+          <label>Conductivity <input id="materialConductivity" type="number" value="10" step="0.1" min="0" /></label>
+          <label>Default Remanence <input id="materialRemanence" type="number" value="1.1" step="0.05" min="0" /></label>
+        </div>
+        <div class="row wrap">
+          <button id="newMaterialBtn">New Material</button>
+          <button id="saveMaterialBtn">Save Material</button>
+          <button id="deleteMaterialBtn">Delete Material</button>
+        </div>
+
+        <h2>Magnetic Field</h2>
+        <div class="grid">
+          <label>Arrow Spacing <input id="fieldSpacing" type="number" value="72" min="16" step="4" /></label>
+          <label>Sample Resolution <input id="fieldResolution" type="number" value="18" min="4" step="1" /></label>
+          <label>Field Scale <input id="fieldScale" type="number" value="1800" min="10" step="10" /></label>
+        </div>
+
         <h2>Tracking</h2>
         <div class="grid">
-          <label>Body ID <input id="trackBody" type="number" value="1" min="1" /></label>
+          <label>Body ID <select id="trackBody"></select></label>
           <label>Metric
             <select id="trackMetric">
               <option value="force">Force Magnitude</option>
@@ -53,17 +110,17 @@
             </select>
           </label>
         </div>
-        <div class="row">
+        <div class="row wrap">
           <button id="startTrackingBtn">Start Tracking</button>
           <button id="clearTrackingBtn">Clear Plot</button>
         </div>
 
         <h2>Project Import / Export</h2>
-        <div class="row">
+        <div class="row wrap">
           <button id="exportBtn">Export JSON</button>
           <button id="importBtn">Import JSON</button>
         </div>
-        <textarea id="projectJson" rows="7" placeholder="Project JSON..."></textarea>
+        <textarea id="projectJson" rows="10" placeholder="Project JSON..."></textarea>
       </section>
 
       <section class="workspace">

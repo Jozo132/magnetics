@@ -4,106 +4,618 @@
   const ctx = simCanvas.getContext("2d");
   const pctx = plotCanvas.getContext("2d");
 
-  const K_MAGNET = 9000;
-  const DRAG = 0.992;
-  const ROT_DRAG = 0.99;
-  const ANGULAR_INERTIA_FACTOR = 0.5;
   const TRACK_SAMPLE_LIMIT = 5000;
-  const FIXED_DT = 1 / 120;
-  const MAX_STEPS_PER_FRAME = 8;
+  const FIXED_DT = 1 / 180;
+  const MAX_STEPS_PER_FRAME = 12;
+  const LINEAR_DAMPING = 0.996;
+  const ANGULAR_DAMPING = 0.994;
+  const MASS_SCALE = 0.00012;
+  const MAGNETIC_FIELD_SCALE = 2600;
+  const MAGNETIC_FORCE_SCALE = 120;
+  const MAGNETIC_TORQUE_SCALE = 0.45;
+  const MAX_MAGNETIC_FORCE = 16000;
+  const MIN_MAGNETIC_DISTANCE = 18;
+  const POSITION_CORRECTION_PERCENT = 0.72;
+  const POSITION_CORRECTION_SLOP = 0.01;
+  const DEFAULT_RESTITUTION = 0.32;
+  const DEFAULT_FRICTION = 0.42;
+
+  const MATERIAL_PRESETS = [
+    {
+      id: "air",
+      name: "Air",
+      density: 0.0012,
+      permeability: 1,
+      susceptibility: 0,
+      conductivity: 0,
+      remanenceDefault: 0,
+      builtin: true,
+    },
+    {
+      id: "plastic",
+      name: "Plastic",
+      density: 1.15,
+      permeability: 1.05,
+      susceptibility: 0.01,
+      conductivity: 0,
+      remanenceDefault: 0,
+      builtin: true,
+    },
+    {
+      id: "aluminum",
+      name: "Aluminum",
+      density: 2.7,
+      permeability: 1.02,
+      susceptibility: 0.02,
+      conductivity: 37.7,
+      remanenceDefault: 0,
+      builtin: true,
+    },
+    {
+      id: "steel",
+      name: "Steel",
+      density: 7.85,
+      permeability: 120,
+      susceptibility: 0.6,
+      conductivity: 6.9,
+      remanenceDefault: 0.18,
+      builtin: true,
+    },
+    {
+      id: "iron",
+      name: "Iron",
+      density: 7.87,
+      permeability: 210,
+      susceptibility: 0.85,
+      conductivity: 10,
+      remanenceDefault: 0.24,
+      builtin: true,
+    },
+    {
+      id: "ferrite",
+      name: "Ferrite",
+      density: 5.1,
+      permeability: 85,
+      susceptibility: 0.42,
+      conductivity: 0.2,
+      remanenceDefault: 0.34,
+      builtin: true,
+    },
+    {
+      id: "neodymium",
+      name: "Neodymium",
+      density: 7.5,
+      permeability: 1.12,
+      susceptibility: 1.2,
+      conductivity: 6.7,
+      remanenceDefault: 1.28,
+      builtin: true,
+    },
+  ];
 
   let running = false;
   let lastTs = performance.now();
   let accumulator = 0;
   let worldTime = 0;
   let nextBodyId = 1;
+  let customMaterialCounter = 1;
 
   const state = {
     gravity: { x: 0, y: 0 },
     bodies: [],
     constraints: [],
+    materials: MATERIAL_PRESETS.map((material) => ({ ...material })),
+    display: {
+      fieldArrowSpacing: 72,
+      fieldSampleResolution: 18,
+      fieldScale: 1800,
+    },
     tracking: {
       bodyId: null,
       metric: "force",
       samples: [],
     },
+    selectedBodyId: null,
+    selectedMaterialId: "steel",
   };
 
   const v = (x = 0, y = 0) => ({ x, y });
   const add = (a, b) => v(a.x + b.x, a.y + b.y);
   const sub = (a, b) => v(a.x - b.x, a.y - b.y);
   const mul = (a, s) => v(a.x * s, a.y * s);
+  const dot = (a, b) => a.x * b.x + a.y * b.y;
+  const cross = (a, b) => a.x * b.y - a.y * b.x;
   const len = (a) => Math.hypot(a.x, a.y);
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const unit = (a) => {
-    const l = len(a) || 1;
-    return v(a.x / l, a.y / l);
+    const magnitude = len(a);
+    if (magnitude < 1e-8) return v(1, 0);
+    return v(a.x / magnitude, a.y / magnitude);
   };
+  const perp = (a) => v(-a.y, a.x);
+  const rotate = (point, angle) => {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    return v(point.x * c - point.y * s, point.x * s + point.y * c);
+  };
+  const inverseRotate = (point, angle) => rotate(point, -angle);
+  const crossSV = (scalar, vector) => v(-scalar * vector.y, scalar * vector.x);
 
   function getEl(id) {
     return document.getElementById(id);
   }
 
-  function addBody(input) {
+  function materialById(materialId) {
+    return state.materials.find((material) => material.id === materialId) || state.materials[0];
+  }
+
+  function bodyArea(body) {
+    if (body.type === "circle") return Math.PI * body.radius * body.radius;
+    return body.width * body.height;
+  }
+
+  function bodyBoundingRadius(body) {
+    if (body.type === "circle") return body.radius;
+    return Math.hypot(body.width * 0.5, body.height * 0.5);
+  }
+
+  function magneticEnabled(body) {
+    return Boolean(body.magnetic && body.magnetic.enabled);
+  }
+
+  function magneticAxis(body) {
+    const angle = body.angle + (body.magnetic?.localAngle || 0);
+    return v(Math.cos(angle), Math.sin(angle));
+  }
+
+  function syncBodyDerived(body) {
+    const material = materialById(body.materialId);
+    body.materialId = material.id;
+    body.radius = clamp(Number(body.radius) || 20, 3, 300);
+    body.width = clamp(Number(body.width) || 40, 5, simCanvas.width);
+    body.height = clamp(Number(body.height) || 40, 5, simCanvas.height);
+    body.massOverride = body.massOverride == null || body.massOverride === "" ? null : Math.max(0.05, Number(body.massOverride) || 0.05);
+
+    const autoMass = Math.max(0.05, bodyArea(body) * material.density * MASS_SCALE);
+    body.mass = body.massOverride == null ? autoMass : body.massOverride;
+    body.invMass = body.mass > 0 ? 1 / body.mass : 0;
+
+    if (body.type === "circle") body.inertia = 0.5 * body.mass * body.radius * body.radius;
+    else body.inertia = (body.mass * (body.width * body.width + body.height * body.height)) / 12;
+    body.invInertia = body.inertia > 0 ? 1 / body.inertia : 0;
+    body.restitution = DEFAULT_RESTITUTION;
+    body.friction = DEFAULT_FRICTION;
+
+    if (!body.magnetic) body.magnetic = {};
+    body.magnetic.enabled = Boolean(body.magnetic.enabled);
+    body.magnetic.model = body.magnetic.model || "permanentDipole";
+    body.magnetic.localAngle = Number(body.magnetic.localAngle) || 0;
+    body.magnetic.strength = Math.max(0, Number(body.magnetic.strength) || 0);
+    body.magnetic.polarity = Number(body.magnetic.polarity) === -1 ? -1 : 1;
+    body.magnetic.remanence = Math.max(0, Number(body.magnetic.remanence) || material.remanenceDefault || 0);
+
+    if (!body.setup) body.setup = captureBodySetup(body);
+  }
+
+  function captureBodySetup(body) {
+    return {
+      type: body.type,
+      pos: { x: body.pos.x, y: body.pos.y },
+      angle: body.angle,
+      width: body.width,
+      height: body.height,
+      radius: body.radius,
+      materialId: body.materialId,
+      massOverride: body.massOverride,
+      magnetic: {
+        enabled: body.magnetic.enabled,
+        model: body.magnetic.model,
+        localAngle: body.magnetic.localAngle,
+        strength: body.magnetic.strength,
+        polarity: body.magnetic.polarity,
+        remanence: body.magnetic.remanence,
+      },
+    };
+  }
+
+  function applyBodySetup(body, setup) {
+    body.type = setup.type;
+    body.pos = v(setup.pos.x, setup.pos.y);
+    body.angle = setup.angle;
+    body.width = setup.width;
+    body.height = setup.height;
+    body.radius = setup.radius;
+    body.materialId = setup.materialId;
+    body.massOverride = setup.massOverride == null ? null : setup.massOverride;
+    body.magnetic = {
+      enabled: Boolean(setup.magnetic?.enabled),
+      model: setup.magnetic?.model || "permanentDipole",
+      localAngle: Number(setup.magnetic?.localAngle) || 0,
+      strength: Math.max(0, Number(setup.magnetic?.strength) || 0),
+      polarity: Number(setup.magnetic?.polarity) === -1 ? -1 : 1,
+      remanence: Math.max(0, Number(setup.magnetic?.remanence) || 0),
+    };
+    body.vel = v(0, 0);
+    body.force = v(0, 0);
+    body.angularVel = 0;
+    body.torque = 0;
+    syncBodyDerived(body);
+    body.setup = JSON.parse(JSON.stringify(setup));
+  }
+
+  function newBodyFromInput(input) {
     const body = {
       id: nextBodyId++,
       type: input.type,
       pos: v(input.x, input.y),
       vel: v(0, 0),
       force: v(0, 0),
-      mass: Math.max(0.001, input.mass),
-      invMass: 1 / Math.max(0.001, input.mass),
       angle: input.angle,
       angularVel: 0,
       torque: 0,
       width: input.width,
       height: input.height,
       radius: input.radius,
-      magnetic: input.magnetic,
-      magneticMoment: input.magneticMoment,
-      magneticDirection: input.angle,
+      materialId: input.materialId,
+      massOverride: input.massOverride,
+      magnetic: {
+        enabled: input.magneticEnabled,
+        model: input.magneticModel,
+        localAngle: input.magneticAngle,
+        strength: input.magneticStrength,
+        polarity: input.magneticPolarity,
+        remanence: input.magneticRemanence,
+      },
+      setup: null,
     };
-    state.bodies.push(body);
+    syncBodyDerived(body);
+    body.setup = captureBodySetup(body);
     return body;
   }
 
+  function addBody(input) {
+    const body = newBodyFromInput(input);
+    state.bodies.push(body);
+    refreshUiLists();
+    setSelectedBody(body.id);
+    return body;
+  }
+
+  function updateBodyFromInput(body, input) {
+    body.type = input.type;
+    body.pos = v(input.x, input.y);
+    body.angle = input.angle;
+    body.width = input.width;
+    body.height = input.height;
+    body.radius = input.radius;
+    body.materialId = input.materialId;
+    body.massOverride = input.massOverride;
+    body.magnetic = {
+      enabled: input.magneticEnabled,
+      model: input.magneticModel,
+      localAngle: input.magneticAngle,
+      strength: input.magneticStrength,
+      polarity: input.magneticPolarity,
+      remanence: input.magneticRemanence,
+    };
+    body.vel = v(0, 0);
+    body.force = v(0, 0);
+    body.angularVel = 0;
+    body.torque = 0;
+    syncBodyDerived(body);
+    body.setup = captureBodySetup(body);
+    refreshUiLists();
+    setSelectedBody(body.id);
+  }
+
+  function removeBody(bodyId) {
+    state.bodies = state.bodies.filter((body) => body.id !== bodyId);
+    state.constraints = state.constraints.filter((constraint) => constraint.aId !== bodyId && constraint.bId !== bodyId);
+    if (state.tracking.bodyId === bodyId) state.tracking.bodyId = null;
+    if (state.selectedBodyId === bodyId) state.selectedBodyId = null;
+    state.tracking.samples = [];
+    refreshUiLists();
+    loadSelectedBodyIntoForm();
+  }
+
   function addConstraint(aId, bId, distance, stiffness) {
-    const a = state.bodies.find((b) => b.id === aId);
-    const b = state.bodies.find((b) => b.id === bId);
+    const a = state.bodies.find((body) => body.id === aId);
+    const b = state.bodies.find((body) => body.id === bId);
     if (!a || !b || aId === bId) return;
     state.constraints.push({
       id: `${aId}-${bId}-${state.constraints.length + 1}`,
       aId,
       bId,
-      distance,
-      stiffness,
+      distance: Math.max(1, Number(distance) || 1),
+      stiffness: Math.max(0.1, Number(stiffness) || 0.1),
     });
   }
 
+  function readShapeInput() {
+    const massText = getEl("shapeMass").value.trim();
+    const type = getEl("shapeType").value;
+    const materialId = getEl("shapeMaterial").value || state.materials[0].id;
+    const material = materialById(materialId);
+
+    return {
+      type,
+      x: Number(getEl("shapeX").value) || simCanvas.width * 0.5,
+      y: Number(getEl("shapeY").value) || simCanvas.height * 0.5,
+      width: Math.max(5, Number(getEl("shapeW").value) || 5),
+      height: Math.max(5, Number(getEl("shapeH").value) || 5),
+      radius: Math.max(3, Number(getEl("shapeR").value) || 3),
+      angle: ((Number(getEl("shapeAngle").value) || 0) * Math.PI) / 180,
+      massOverride: massText === "" ? null : Math.max(0.05, Number(massText) || 0.05),
+      materialId,
+      magneticEnabled: getEl("shapeMagnetic").checked,
+      magneticModel: getEl("shapeMagModel").value,
+      magneticAngle: ((Number(getEl("shapeMagAngle").value) || 0) * Math.PI) / 180,
+      magneticPolarity: Number(getEl("shapePolarity").value) === -1 ? -1 : 1,
+      magneticStrength: Math.max(0, Number(getEl("shapeMoment").value) || 0),
+      magneticRemanence: Math.max(0, Number(getEl("shapeRemanence").value) || material.remanenceDefault || 0),
+    };
+  }
+
+  function populateShapeForm(body) {
+    const material = materialById(body.materialId);
+    getEl("shapeType").value = body.type;
+    getEl("shapeX").value = body.setup ? body.setup.pos.x.toFixed(2) : body.pos.x.toFixed(2);
+    getEl("shapeY").value = body.setup ? body.setup.pos.y.toFixed(2) : body.pos.y.toFixed(2);
+    getEl("shapeW").value = body.width.toFixed(2);
+    getEl("shapeH").value = body.height.toFixed(2);
+    getEl("shapeR").value = body.radius.toFixed(2);
+    getEl("shapeAngle").value = (((body.setup ? body.setup.angle : body.angle) * 180) / Math.PI).toFixed(2);
+    getEl("shapeMass").value = body.massOverride == null ? "" : body.massOverride.toFixed(2);
+    getEl("shapeMaterial").value = material.id;
+    getEl("shapeMagnetic").checked = magneticEnabled(body);
+    getEl("shapeMagModel").value = body.magnetic.model;
+    getEl("shapeMagAngle").value = ((body.magnetic.localAngle * 180) / Math.PI).toFixed(2);
+    getEl("shapePolarity").value = String(body.magnetic.polarity || 1);
+    getEl("shapeMoment").value = body.magnetic.strength.toFixed(2);
+    getEl("shapeRemanence").value = body.magnetic.remanence.toFixed(2);
+    toggleShapeInputs();
+  }
+
+  function clearShapeForm() {
+    getEl("bodySelect").value = "";
+    getEl("shapeType").value = "rectangle";
+    getEl("shapeX").value = 180;
+    getEl("shapeY").value = 180;
+    getEl("shapeW").value = 90;
+    getEl("shapeH").value = 50;
+    getEl("shapeR").value = 28;
+    getEl("shapeAngle").value = 0;
+    getEl("shapeMass").value = "";
+    getEl("shapeMaterial").value = state.selectedMaterialId || state.materials[0]?.id || "";
+    getEl("shapeMagnetic").checked = false;
+    getEl("shapeMagModel").value = "permanentDipole";
+    getEl("shapeMagAngle").value = 0;
+    getEl("shapePolarity").value = "1";
+    getEl("shapeMoment").value = 40;
+    getEl("shapeRemanence").value = materialById(getEl("shapeMaterial").value).remanenceDefault.toFixed(2);
+    toggleShapeInputs();
+  }
+
+  function setSelectedBody(bodyId) {
+    state.selectedBodyId = bodyId == null ? null : Number(bodyId);
+    const select = getEl("bodySelect");
+    select.value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
+    loadSelectedBodyIntoForm();
+  }
+
+  function loadSelectedBodyIntoForm() {
+    const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+    if (!body) {
+      clearShapeForm();
+      return;
+    }
+    populateShapeForm(body);
+  }
+
+  function refreshSelect(select, items, valueFn, labelFn, includeEmptyLabel) {
+    const previous = select.value;
+    select.innerHTML = "";
+    if (includeEmptyLabel != null) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = includeEmptyLabel;
+      select.appendChild(option);
+    }
+    for (const item of items) {
+      const option = document.createElement("option");
+      option.value = String(valueFn(item));
+      option.textContent = labelFn(item);
+      select.appendChild(option);
+    }
+    if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+  }
+
+  function refreshMaterialOptions() {
+    const label = (material) => `${material.name} (${material.id})`;
+    refreshSelect(getEl("shapeMaterial"), state.materials, (material) => material.id, label);
+    refreshSelect(getEl("materialSelect"), state.materials, (material) => material.id, label);
+
+    if (!state.selectedMaterialId || !state.materials.some((material) => material.id === state.selectedMaterialId)) {
+      state.selectedMaterialId = state.materials[0]?.id || null;
+    }
+
+    getEl("materialSelect").value = state.selectedMaterialId || "";
+    if (state.selectedMaterialId) loadMaterialIntoForm(state.selectedMaterialId);
+  }
+
+  function refreshBodyOptions() {
+    const bodyLabel = (body) => `#${body.id} ${body.type} (${materialById(body.materialId).name})`;
+    refreshSelect(getEl("bodySelect"), state.bodies, (body) => body.id, bodyLabel, "New body");
+    refreshSelect(getEl("constraintA"), state.bodies, (body) => body.id, bodyLabel);
+    refreshSelect(getEl("constraintB"), state.bodies, (body) => body.id, bodyLabel);
+    refreshSelect(getEl("trackBody"), state.bodies, (body) => body.id, bodyLabel);
+
+    if (state.selectedBodyId == null || !state.bodies.some((body) => body.id === state.selectedBodyId)) {
+      state.selectedBodyId = state.bodies[0]?.id ?? null;
+    }
+    if (state.tracking.bodyId == null || !state.bodies.some((body) => body.id === state.tracking.bodyId)) {
+      state.tracking.bodyId = state.bodies[0]?.id ?? null;
+    }
+
+    getEl("bodySelect").value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
+    getEl("trackBody").value = state.tracking.bodyId == null ? "" : String(state.tracking.bodyId);
+  }
+
+  function refreshUiLists() {
+    refreshMaterialOptions();
+    refreshBodyOptions();
+  }
+
+  function loadMaterialIntoForm(materialId) {
+    const material = materialById(materialId);
+    state.selectedMaterialId = material.id;
+    getEl("materialSelect").value = material.id;
+    getEl("materialName").value = material.name;
+    getEl("materialDensity").value = material.density;
+    getEl("materialPermeability").value = material.permeability;
+    getEl("materialSusceptibility").value = material.susceptibility;
+    getEl("materialConductivity").value = material.conductivity;
+    getEl("materialRemanence").value = material.remanenceDefault;
+  }
+
+  function readMaterialForm() {
+    return {
+      name: getEl("materialName").value.trim() || `Custom Material ${customMaterialCounter}`,
+      density: Math.max(0.01, Number(getEl("materialDensity").value) || 0.01),
+      permeability: Math.max(0.01, Number(getEl("materialPermeability").value) || 0.01),
+      susceptibility: Number(getEl("materialSusceptibility").value) || 0,
+      conductivity: Math.max(0, Number(getEl("materialConductivity").value) || 0),
+      remanenceDefault: Math.max(0, Number(getEl("materialRemanence").value) || 0),
+    };
+  }
+
+  function saveMaterial() {
+    const data = readMaterialForm();
+    const existing = state.materials.find((material) => material.id === state.selectedMaterialId);
+    if (existing) {
+      Object.assign(existing, data);
+      loadMaterialIntoForm(existing.id);
+    } else {
+      const newMaterial = {
+        id: `custom-${customMaterialCounter++}`,
+        builtin: false,
+        ...data,
+      };
+      state.materials.push(newMaterial);
+      state.selectedMaterialId = newMaterial.id;
+      loadMaterialIntoForm(newMaterial.id);
+    }
+    resyncAllBodies();
+    refreshUiLists();
+    loadSelectedBodyIntoForm();
+  }
+
+  function deleteMaterial() {
+    const material = state.materials.find((entry) => entry.id === state.selectedMaterialId);
+    if (!material) return;
+    if (material.builtin) {
+      alert("Built-in materials cannot be deleted.");
+      return;
+    }
+    const fallbackId = state.materials.find((entry) => entry.id === "steel")?.id || state.materials[0]?.id;
+    state.materials = state.materials.filter((entry) => entry.id !== material.id);
+    for (const body of state.bodies) {
+      if (body.materialId === material.id) {
+        body.materialId = fallbackId;
+        syncBodyDerived(body);
+        body.setup = captureBodySetup(body);
+      }
+    }
+    state.selectedMaterialId = fallbackId;
+    refreshUiLists();
+    loadMaterialIntoForm(state.selectedMaterialId);
+    loadSelectedBodyIntoForm();
+  }
+
+  function resyncAllBodies() {
+    for (const body of state.bodies) {
+      syncBodyDerived(body);
+    }
+  }
+
+  function resetDynamics() {
+    running = false;
+    getEl("startPauseBtn").textContent = "Start";
+    accumulator = 0;
+    worldTime = 0;
+    state.tracking.samples = [];
+    for (const body of state.bodies) {
+      applyBodySetup(body, body.setup || captureBodySetup(body));
+    }
+  }
+
+  function clearProject() {
+    running = false;
+    getEl("startPauseBtn").textContent = "Start";
+    accumulator = 0;
+    worldTime = 0;
+    nextBodyId = 1;
+    state.bodies = [];
+    state.constraints = [];
+    state.tracking = { bodyId: null, metric: "force", samples: [] };
+    state.selectedBodyId = null;
+    refreshUiLists();
+    clearShapeForm();
+  }
+
   function resetForces() {
-    for (const b of state.bodies) {
-      b.force = v(state.gravity.x * b.mass, state.gravity.y * b.mass);
-      b.torque = 0;
+    for (const body of state.bodies) {
+      body.force = v(state.gravity.x * body.mass, state.gravity.y * body.mass);
+      body.torque = 0;
     }
   }
 
   function applyConstraints() {
-    for (const c of state.constraints) {
-      const a = state.bodies.find((b) => b.id === c.aId);
-      const b = state.bodies.find((b) => b.id === c.bId);
+    for (const constraint of state.constraints) {
+      const a = state.bodies.find((body) => body.id === constraint.aId);
+      const b = state.bodies.find((body) => body.id === constraint.bId);
       if (!a || !b) continue;
       const delta = sub(b.pos, a.pos);
-      const d = len(delta) || 0.0001;
-      const dir = mul(delta, 1 / d);
-      const stretch = d - c.distance;
-      const springForce = c.stiffness * stretch;
-      const f = mul(dir, springForce);
-      a.force = add(a.force, f);
-      b.force = sub(b.force, f);
+      const distance = Math.max(0.0001, len(delta));
+      const direction = mul(delta, 1 / distance);
+      const stretch = distance - constraint.distance;
+      const relativeVelocity = dot(sub(b.vel, a.vel), direction);
+      const damping = Math.sqrt(constraint.stiffness) * 0.8;
+      const forceMagnitude = constraint.stiffness * stretch - damping * relativeVelocity;
+      const force = mul(direction, forceMagnitude);
+      a.force = add(a.force, force);
+      b.force = sub(b.force, force);
     }
   }
 
-  function magneticAxis(body) {
-    return v(Math.cos(body.magneticDirection), Math.sin(body.magneticDirection));
+  function magneticMoment(body) {
+    if (!magneticEnabled(body)) return v(0, 0);
+    const material = materialById(body.materialId);
+    const axis = magneticAxis(body);
+    const permeabilityScale = Math.sqrt(Math.max(0.01, material.permeability));
+    const susceptibilityScale = body.magnetic.model === "inducedDipole" ? Math.max(0.05, Math.abs(material.susceptibility)) : 1;
+    const magnitude = body.magnetic.strength * Math.max(0.01, body.magnetic.remanence) * permeabilityScale * susceptibilityScale * body.magnetic.polarity;
+    return mul(axis, magnitude);
+  }
+
+  function dipoleFieldFromBodyAtPoint(body, point) {
+    const moment = magneticMoment(body);
+    if (len(moment) < 1e-8) return v(0, 0);
+    const offset = sub(point, body.pos);
+    const distance = Math.max(MIN_MAGNETIC_DISTANCE, len(offset));
+    const direction = mul(offset, 1 / distance);
+    const momentAlignment = dot(moment, direction);
+    const scale = MAGNETIC_FIELD_SCALE / (distance * distance * distance);
+    return mul(sub(mul(direction, 3 * momentAlignment), moment), scale);
+  }
+
+  function magneticFieldAtPoint(point) {
+    let field = v(0, 0);
+    for (const body of state.bodies) {
+      if (!magneticEnabled(body)) continue;
+      field = add(field, dipoleFieldFromBodyAtPoint(body, point));
+    }
+    return field;
   }
 
   function applyMagnetics() {
@@ -111,71 +623,283 @@
       for (let j = i + 1; j < state.bodies.length; j += 1) {
         const a = state.bodies[i];
         const b = state.bodies[j];
-        if (!a.magnetic || !b.magnetic) continue;
-        const delta = sub(b.pos, a.pos);
-        const dist = Math.max(25, len(delta));
-        const dir = mul(delta, 1 / dist);
-        const ma = magneticAxis(a);
-        const mb = magneticAxis(b);
-        const align = (ma.x * dir.x + ma.y * dir.y) * (mb.x * dir.x + mb.y * dir.y);
-        const mag = (K_MAGNET * a.magneticMoment * b.magneticMoment * align) / (dist * dist);
-        const f = mul(dir, mag);
-        a.force = add(a.force, f);
-        b.force = sub(b.force, f);
+        if (!magneticEnabled(a) || !magneticEnabled(b)) continue;
 
-        const relAB = Math.atan2(delta.y, delta.x) - a.magneticDirection;
-        const relBA = Math.atan2(-delta.y, -delta.x) - b.magneticDirection;
-        const torqueA = (K_MAGNET * a.magneticMoment * b.magneticMoment * Math.sin(relAB)) / (dist * dist * dist);
-        const torqueB = (K_MAGNET * a.magneticMoment * b.magneticMoment * Math.sin(relBA)) / (dist * dist * dist);
-        a.torque += torqueA;
-        b.torque += torqueB;
+        const delta = sub(b.pos, a.pos);
+        const distance = Math.max(MIN_MAGNETIC_DISTANCE, len(delta));
+        const epsilon = clamp(distance * 0.07, 2, 10);
+        const momentB = magneticMoment(b);
+        const momentA = magneticMoment(a);
+
+        const energyDensityAt = (point, source, targetMoment) => dot(targetMoment, dipoleFieldFromBodyAtPoint(source, point));
+        const gradX =
+          (energyDensityAt(add(b.pos, v(epsilon, 0)), a, momentB) - energyDensityAt(add(b.pos, v(-epsilon, 0)), a, momentB)) /
+          (2 * epsilon);
+        const gradY =
+          (energyDensityAt(add(b.pos, v(0, epsilon)), a, momentB) - energyDensityAt(add(b.pos, v(0, -epsilon)), a, momentB)) /
+          (2 * epsilon);
+        let forceOnB = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
+        const forceMagnitude = len(forceOnB);
+        if (forceMagnitude > MAX_MAGNETIC_FORCE) {
+          forceOnB = mul(unit(forceOnB), MAX_MAGNETIC_FORCE);
+        }
+
+        a.force = sub(a.force, forceOnB);
+        b.force = add(b.force, forceOnB);
+
+        const fieldAtB = dipoleFieldFromBodyAtPoint(a, b.pos);
+        const fieldAtA = dipoleFieldFromBodyAtPoint(b, a.pos);
+        a.torque += cross(momentA, fieldAtA) * MAGNETIC_TORQUE_SCALE;
+        b.torque += cross(momentB, fieldAtB) * MAGNETIC_TORQUE_SCALE;
+      }
+    }
+  }
+
+  function bodyAxes(body) {
+    return [rotate(v(1, 0), body.angle), rotate(v(0, 1), body.angle)];
+  }
+
+  function rectVertices(body) {
+    const halfW = body.width * 0.5;
+    const halfH = body.height * 0.5;
+    const local = [v(-halfW, -halfH), v(halfW, -halfH), v(halfW, halfH), v(-halfW, halfH)];
+    return local.map((point) => add(body.pos, rotate(point, body.angle)));
+  }
+
+  function projectVertices(axis, vertices) {
+    let min = dot(vertices[0], axis);
+    let max = min;
+    for (let i = 1; i < vertices.length; i += 1) {
+      const value = dot(vertices[i], axis);
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    return { min, max };
+  }
+
+  function supportPoint(body, direction) {
+    const dir = unit(direction);
+    if (body.type === "circle") return add(body.pos, mul(dir, body.radius));
+    const vertices = rectVertices(body);
+    let best = vertices[0];
+    let bestScore = dot(best, dir);
+    for (let i = 1; i < vertices.length; i += 1) {
+      const score = dot(vertices[i], dir);
+      if (score > bestScore) {
+        bestScore = score;
+        best = vertices[i];
+      }
+    }
+    return best;
+  }
+
+  function circleCircleCollision(a, b) {
+    const delta = sub(b.pos, a.pos);
+    const distance = len(delta);
+    const radiusSum = a.radius + b.radius;
+    if (distance >= radiusSum) return null;
+    const normal = distance < 1e-6 ? v(1, 0) : mul(delta, 1 / distance);
+    const penetration = radiusSum - distance;
+    const contact = add(a.pos, mul(normal, a.radius - penetration * 0.5));
+    return { normal, penetration, contact };
+  }
+
+  function rectRectCollision(a, b) {
+    const verticesA = rectVertices(a);
+    const verticesB = rectVertices(b);
+    const axes = [...bodyAxes(a), ...bodyAxes(b)];
+    let bestAxis = null;
+    let bestOverlap = Infinity;
+    for (const rawAxis of axes) {
+      const axis = unit(rawAxis);
+      const projA = projectVertices(axis, verticesA);
+      const projB = projectVertices(axis, verticesB);
+      const overlap = Math.min(projA.max, projB.max) - Math.max(projA.min, projB.min);
+      if (overlap <= 0) return null;
+      if (overlap < bestOverlap) {
+        bestOverlap = overlap;
+        bestAxis = axis;
+      }
+    }
+    let normal = bestAxis;
+    if (dot(sub(b.pos, a.pos), normal) < 0) normal = mul(normal, -1);
+    const pointA = supportPoint(a, normal);
+    const pointB = supportPoint(b, mul(normal, -1));
+    return { normal, penetration: bestOverlap, contact: mul(add(pointA, pointB), 0.5) };
+  }
+
+  function circleRectCollision(circle, rect, reverse) {
+    const localCenter = inverseRotate(sub(circle.pos, rect.pos), rect.angle);
+    const halfW = rect.width * 0.5;
+    const halfH = rect.height * 0.5;
+    const closestLocal = v(clamp(localCenter.x, -halfW, halfW), clamp(localCenter.y, -halfH, halfH));
+    let normalLocal;
+    let penetration;
+    const delta = sub(closestLocal, localCenter);
+    const distance = len(delta);
+
+    if (distance > 1e-6) {
+      if (distance >= circle.radius) return null;
+      normalLocal = mul(delta, 1 / distance);
+      penetration = circle.radius - distance;
+    } else {
+      const dx = halfW - Math.abs(localCenter.x);
+      const dy = halfH - Math.abs(localCenter.y);
+      if (dx < dy) {
+        normalLocal = v(localCenter.x >= 0 ? 1 : -1, 0);
+        penetration = circle.radius + dx;
+        closestLocal.x = localCenter.x >= 0 ? halfW : -halfW;
+      } else {
+        normalLocal = v(0, localCenter.y >= 0 ? 1 : -1);
+        penetration = circle.radius + dy;
+        closestLocal.y = localCenter.y >= 0 ? halfH : -halfH;
+      }
+    }
+
+    const normal = rotate(normalLocal, rect.angle);
+    const contact = add(rect.pos, rotate(closestLocal, rect.angle));
+    if (reverse) {
+      return { normal: mul(normal, -1), penetration, contact };
+    }
+    return { normal, penetration, contact };
+  }
+
+  function detectCollision(a, b) {
+    const radiusDistance = len(sub(b.pos, a.pos));
+    if (radiusDistance > bodyBoundingRadius(a) + bodyBoundingRadius(b)) return null;
+    if (a.type === "circle" && b.type === "circle") return circleCircleCollision(a, b);
+    if (a.type === "rectangle" && b.type === "rectangle") return rectRectCollision(a, b);
+    if (a.type === "circle" && b.type === "rectangle") return circleRectCollision(a, b, false);
+    if (a.type === "rectangle" && b.type === "circle") return circleRectCollision(b, a, true);
+    return null;
+  }
+
+  function positionalCorrection(a, b, collision) {
+    const invMassSum = a.invMass + b.invMass;
+    if (invMassSum <= 0) return;
+    const correctionMagnitude = (Math.max(collision.penetration - POSITION_CORRECTION_SLOP, 0) / invMassSum) * POSITION_CORRECTION_PERCENT;
+    const correction = mul(collision.normal, correctionMagnitude);
+    a.pos = sub(a.pos, mul(correction, a.invMass));
+    b.pos = add(b.pos, mul(correction, b.invMass));
+  }
+
+  function resolveCollision(a, b, collision) {
+    positionalCorrection(a, b, collision);
+
+    const ra = sub(collision.contact, a.pos);
+    const rb = sub(collision.contact, b.pos);
+    const velocityA = add(a.vel, crossSV(a.angularVel, ra));
+    const velocityB = add(b.vel, crossSV(b.angularVel, rb));
+    const relativeVelocity = sub(velocityB, velocityA);
+    const velocityAlongNormal = dot(relativeVelocity, collision.normal);
+    if (velocityAlongNormal > 0) return;
+
+    const raCrossN = cross(ra, collision.normal);
+    const rbCrossN = cross(rb, collision.normal);
+    const invMassSum =
+      a.invMass +
+      b.invMass +
+      raCrossN * raCrossN * a.invInertia +
+      rbCrossN * rbCrossN * b.invInertia;
+    if (invMassSum <= 1e-8) return;
+
+    const restitution = Math.min(a.restitution, b.restitution);
+    const impulseMagnitude = (-(1 + restitution) * velocityAlongNormal) / invMassSum;
+    const impulse = mul(collision.normal, impulseMagnitude);
+
+    a.vel = sub(a.vel, mul(impulse, a.invMass));
+    b.vel = add(b.vel, mul(impulse, b.invMass));
+    a.angularVel -= cross(ra, impulse) * a.invInertia;
+    b.angularVel += cross(rb, impulse) * b.invInertia;
+
+    const tangentVelocity = sub(relativeVelocity, mul(collision.normal, velocityAlongNormal));
+    const tangentLength = len(tangentVelocity);
+    if (tangentLength < 1e-6) return;
+    const tangent = mul(tangentVelocity, 1 / tangentLength);
+    const raCrossT = cross(ra, tangent);
+    const rbCrossT = cross(rb, tangent);
+    const frictionDenominator =
+      a.invMass +
+      b.invMass +
+      raCrossT * raCrossT * a.invInertia +
+      rbCrossT * rbCrossT * b.invInertia;
+    if (frictionDenominator <= 1e-8) return;
+
+    let frictionImpulseMagnitude = -dot(relativeVelocity, tangent) / frictionDenominator;
+    const mu = Math.sqrt(a.friction * b.friction);
+    frictionImpulseMagnitude = clamp(frictionImpulseMagnitude, -impulseMagnitude * mu, impulseMagnitude * mu);
+    const frictionImpulse = mul(tangent, frictionImpulseMagnitude);
+
+    a.vel = sub(a.vel, mul(frictionImpulse, a.invMass));
+    b.vel = add(b.vel, mul(frictionImpulse, b.invMass));
+    a.angularVel -= cross(ra, frictionImpulse) * a.invInertia;
+    b.angularVel += cross(rb, frictionImpulse) * b.invInertia;
+  }
+
+  function solveBodyCollisions() {
+    for (let i = 0; i < state.bodies.length; i += 1) {
+      for (let j = i + 1; j < state.bodies.length; j += 1) {
+        const collision = detectCollision(state.bodies[i], state.bodies[j]);
+        if (collision) resolveCollision(state.bodies[i], state.bodies[j], collision);
+      }
+    }
+  }
+
+  function solveBoundaryCollisions() {
+    for (const body of state.bodies) {
+      const radius = bodyBoundingRadius(body);
+      if (body.pos.x < radius) {
+        body.pos.x = radius;
+        if (body.vel.x < 0) body.vel.x *= -body.restitution;
+      }
+      if (body.pos.x > simCanvas.width - radius) {
+        body.pos.x = simCanvas.width - radius;
+        if (body.vel.x > 0) body.vel.x *= -body.restitution;
+      }
+      if (body.pos.y < radius) {
+        body.pos.y = radius;
+        if (body.vel.y < 0) body.vel.y *= -body.restitution;
+      }
+      if (body.pos.y > simCanvas.height - radius) {
+        body.pos.y = simCanvas.height - radius;
+        if (body.vel.y > 0) body.vel.y *= -body.restitution;
       }
     }
   }
 
   function integrate(dt) {
-    for (const b of state.bodies) {
-      const accel = mul(b.force, b.invMass);
-      b.vel = add(b.vel, mul(accel, dt));
-      b.vel = mul(b.vel, DRAG);
-      b.pos = add(b.pos, mul(b.vel, dt));
+    const linearDamping = Math.pow(LINEAR_DAMPING, dt * 120);
+    const angularDamping = Math.pow(ANGULAR_DAMPING, dt * 120);
 
-      b.angularVel += b.torque * b.invMass * ANGULAR_INERTIA_FACTOR * dt;
-      b.angularVel *= ROT_DRAG;
-      b.angle += b.angularVel * dt;
-      b.magneticDirection = b.angle;
+    for (const body of state.bodies) {
+      const accel = mul(body.force, body.invMass);
+      body.vel = add(body.vel, mul(accel, dt));
+      body.angularVel += body.torque * body.invInertia * dt;
+      body.vel = mul(body.vel, linearDamping);
+      body.angularVel *= angularDamping;
+      body.pos = add(body.pos, mul(body.vel, dt));
+      body.angle += body.angularVel * dt;
+    }
 
-      const radius = b.type === "circle" ? b.radius : Math.max(b.width, b.height) * 0.5;
-      if (b.pos.x < radius) {
-        b.pos.x = radius;
-        b.vel.x *= -0.5;
-      }
-      if (b.pos.x > simCanvas.width - radius) {
-        b.pos.x = simCanvas.width - radius;
-        b.vel.x *= -0.5;
-      }
-      if (b.pos.y < radius) {
-        b.pos.y = radius;
-        b.vel.y *= -0.5;
-      }
-      if (b.pos.y > simCanvas.height - radius) {
-        b.pos.y = simCanvas.height - radius;
-        b.vel.y *= -0.5;
-      }
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+      solveBodyCollisions();
+      solveBoundaryCollisions();
     }
   }
 
   function sampleTracking() {
     const { bodyId, metric } = state.tracking;
     if (!bodyId) return;
-    const b = state.bodies.find((x) => x.id === bodyId);
-    if (!b) return;
+    const body = state.bodies.find((entry) => entry.id === bodyId);
+    if (!body) return;
+
     let value = 0;
-    if (metric === "force") value = len(b.force);
-    else if (metric === "torque") value = b.torque;
-    else if (metric === "x") value = b.pos.x;
-    else if (metric === "y") value = b.pos.y;
-    else if (metric === "angle") value = (b.angle * 180) / Math.PI;
+    if (metric === "force") value = len(body.force);
+    else if (metric === "torque") value = body.torque;
+    else if (metric === "x") value = body.pos.x;
+    else if (metric === "y") value = body.pos.y;
+    else if (metric === "angle") value = (body.angle * 180) / Math.PI;
+
     state.tracking.samples.push({ t: worldTime, v: value });
     if (state.tracking.samples.length > TRACK_SAMPLE_LIMIT) state.tracking.samples.shift();
   }
@@ -189,42 +913,108 @@
     sampleTracking();
   }
 
-  function drawArrow(base, vec, color) {
-    const target = add(base, vec);
+  function drawArrow(base, vector, color) {
+    const magnitude = len(vector);
+    if (magnitude < 0.001) return;
+    const target = add(base, vector);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
     ctx.lineTo(target.x, target.y);
     ctx.stroke();
-    const d = unit(vec);
-    const p = v(-d.y, d.x);
+    const direction = unit(vector);
+    const normal = perp(direction);
     ctx.beginPath();
     ctx.moveTo(target.x, target.y);
-    ctx.lineTo(target.x - d.x * 8 + p.x * 4, target.y - d.y * 8 + p.y * 4);
-    ctx.lineTo(target.x - d.x * 8 - p.x * 4, target.y - d.y * 8 - p.y * 4);
+    ctx.lineTo(target.x - direction.x * 8 + normal.x * 4, target.y - direction.y * 8 + normal.y * 4);
+    ctx.lineTo(target.x - direction.x * 8 - normal.x * 4, target.y - direction.y * 8 - normal.y * 4);
     ctx.closePath();
     ctx.fill();
   }
 
   function drawField() {
-    const spacing = 70;
-    for (let y = spacing / 2; y < simCanvas.height; y += spacing) {
-      for (let x = spacing / 2; x < simCanvas.width; x += spacing) {
+    const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 72, 16, 200);
+    const resolution = clamp(Number(state.display.fieldSampleResolution) || 18, 4, arrowSpacing);
+    const scale = clamp(Number(state.display.fieldScale) || 1800, 10, 100000);
+    const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
+    const offsetStart = -((subsamples - 1) * resolution) / 2;
+
+    for (let y = arrowSpacing / 2; y < simCanvas.height; y += arrowSpacing) {
+      for (let x = arrowSpacing / 2; x < simCanvas.width; x += arrowSpacing) {
         let field = v(0, 0);
-        for (const b of state.bodies) {
-          if (!b.magnetic) continue;
-          const d = sub(v(x, y), b.pos);
-          const r = Math.max(30, len(d));
-          const axis = magneticAxis(b);
-          const gain = (K_MAGNET * b.magneticMoment) / (r * r * r);
-          field = add(field, mul(axis, gain * 0.1));
+        let count = 0;
+        for (let sy = 0; sy < subsamples; sy += 1) {
+          for (let sx = 0; sx < subsamples; sx += 1) {
+            const sample = v(x + offsetStart + sx * resolution, y + offsetStart + sy * resolution);
+            field = add(field, magneticFieldAtPoint(sample));
+            count += 1;
+          }
         }
-        const mag = Math.min(22, len(field) * 40);
-        if (mag < 0.6) continue;
-        drawArrow(v(x, y), mul(unit(field), mag), "rgba(147,197,253,0.6)");
+        field = mul(field, 1 / count);
+        const magnitude = len(field);
+        if (magnitude < 0.002) continue;
+        const arrowLength = Math.min(26, magnitude * (scale / 1500));
+        drawArrow(v(x, y), mul(unit(field), arrowLength), "rgba(147,197,253,0.58)");
       }
     }
+  }
+
+  function drawBody(body) {
+    const selected = body.id === state.selectedBodyId;
+    const material = materialById(body.materialId);
+    ctx.save();
+    ctx.translate(body.pos.x, body.pos.y);
+    ctx.rotate(body.angle);
+    ctx.lineWidth = selected ? 3 : 1.5;
+    ctx.strokeStyle = selected ? "#facc15" : magneticEnabled(body) ? "#f97316" : "#38bdf8";
+    ctx.fillStyle = magneticEnabled(body) ? "rgba(124,45,18,0.35)" : "rgba(30,41,59,0.7)";
+
+    if (body.type === "circle") {
+      ctx.beginPath();
+      ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.rect(-body.width * 0.5, -body.height * 0.5, body.width, body.height);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "#e2e8f0";
+    ctx.font = "12px Inter, sans-serif";
+    ctx.fillText(`#${body.id}`, 8, -8);
+    ctx.fillText(material.name, 8, 8);
+
+    if (magneticEnabled(body)) {
+      const localAngle = body.magnetic.localAngle;
+      const axis = v(Math.cos(localAngle), Math.sin(localAngle));
+      const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.45;
+      const northSign = body.magnetic.polarity === -1 ? -1 : 1;
+      const north = mul(axis, extent * northSign);
+      const south = mul(axis, -extent * northSign);
+      ctx.strokeStyle = "#fda4af";
+      ctx.beginPath();
+      ctx.moveTo(south.x, south.y);
+      ctx.lineTo(north.x, north.y);
+      ctx.stroke();
+      ctx.fillStyle = "#fb7185";
+      ctx.beginPath();
+      ctx.arc(north.x, north.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillText("N", north.x + 6, north.y - 4);
+      ctx.fillStyle = "#60a5fa";
+      ctx.beginPath();
+      ctx.arc(south.x, south.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillText("S", south.x + 6, south.y - 4);
+    }
+
+    ctx.restore();
+
+    drawArrow(body.pos, mul(unit(body.force), Math.min(32, len(body.force) * 0.02)), "#22c55e");
+    drawArrow(body.pos, v(0, clamp(-body.torque * 0.04, -26, 26)), "#a78bfa");
   }
 
   function render() {
@@ -232,9 +1022,10 @@
     drawField();
 
     ctx.strokeStyle = "#22d3ee";
-    for (const c of state.constraints) {
-      const a = state.bodies.find((b) => b.id === c.aId);
-      const b = state.bodies.find((b) => b.id === c.bId);
+    ctx.lineWidth = 1;
+    for (const constraint of state.constraints) {
+      const a = state.bodies.find((body) => body.id === constraint.aId);
+      const b = state.bodies.find((body) => body.id === constraint.bId);
       if (!a || !b) continue;
       ctx.beginPath();
       ctx.moveTo(a.pos.x, a.pos.y);
@@ -242,32 +1033,7 @@
       ctx.stroke();
     }
 
-    for (const b of state.bodies) {
-      ctx.save();
-      ctx.translate(b.pos.x, b.pos.y);
-      ctx.rotate(b.angle);
-      ctx.strokeStyle = b.magnetic ? "#f97316" : "#38bdf8";
-      ctx.fillStyle = "rgba(30,41,59,0.65)";
-      if (b.type === "circle") {
-        ctx.beginPath();
-        ctx.arc(0, 0, b.radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      } else {
-        ctx.beginPath();
-        ctx.rect(-b.width * 0.5, -b.height * 0.5, b.width, b.height);
-        ctx.fill();
-        ctx.stroke();
-      }
-      ctx.fillStyle = "#e2e8f0";
-      ctx.fillText(`#${b.id}`, 8, -8);
-      if (b.magnetic) {
-        drawArrow(v(0, 0), mul(magneticAxis(b), 24), "#fb7185");
-      }
-      ctx.restore();
-      drawArrow(b.pos, mul(unit(b.force), Math.min(35, len(b.force) * 0.025)), "#22c55e");
-      drawArrow(b.pos, v(0, Math.max(-30, Math.min(30, -b.torque * 0.2))), "#a78bfa");
-    }
+    for (const body of state.bodies) drawBody(body);
   }
 
   function renderPlot() {
@@ -278,19 +1044,21 @@
     pctx.moveTo(0, plotCanvas.height * 0.5);
     pctx.lineTo(plotCanvas.width, plotCanvas.height * 0.5);
     pctx.stroke();
+
     if (samples.length < 2) return;
     const minT = samples[0].t;
     const maxT = samples[samples.length - 1].t;
-    const minV = Math.min(...samples.map((s) => s.v));
-    const maxV = Math.max(...samples.map((s) => s.v));
+    const minV = Math.min(...samples.map((sample) => sample.v));
+    const maxV = Math.max(...samples.map((sample) => sample.v));
     const tSpan = Math.max(0.0001, maxT - minT);
     const vSpan = Math.max(0.0001, maxV - minV);
+
     pctx.strokeStyle = "#22d3ee";
     pctx.beginPath();
     for (let i = 0; i < samples.length; i += 1) {
-      const s = samples[i];
-      const x = ((s.t - minT) / tSpan) * plotCanvas.width;
-      const y = plotCanvas.height - ((s.v - minV) / vSpan) * plotCanvas.height;
+      const sample = samples[i];
+      const x = ((sample.t - minT) / tSpan) * plotCanvas.width;
+      const y = plotCanvas.height - ((sample.v - minV) / vSpan) * plotCanvas.height;
       if (i === 0) pctx.moveTo(x, y);
       else pctx.lineTo(x, y);
     }
@@ -302,11 +1070,11 @@
     lastTs = ts;
     if (running) {
       accumulator += elapsed;
-      let iter = 0;
-      while (accumulator >= FIXED_DT && iter < MAX_STEPS_PER_FRAME) {
+      let steps = 0;
+      while (accumulator >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
         step(FIXED_DT);
         accumulator -= FIXED_DT;
-        iter += 1;
+        steps += 1;
       }
     }
     render();
@@ -317,23 +1085,31 @@
   function exportProject() {
     const payload = {
       nextBodyId,
+      customMaterialCounter,
       worldTime,
-      bodies: state.bodies.map((b) => ({
-        id: b.id,
-        type: b.type,
-        pos: b.pos,
-        vel: b.vel,
-        mass: b.mass,
-        angle: b.angle,
-        angularVel: b.angularVel,
-        width: b.width,
-        height: b.height,
-        radius: b.radius,
-        magnetic: b.magnetic,
-        magneticMoment: b.magneticMoment,
+      display: state.display,
+      materials: state.materials,
+      bodies: state.bodies.map((body) => ({
+        id: body.id,
+        type: body.type,
+        pos: body.pos,
+        vel: body.vel,
+        force: body.force,
+        angle: body.angle,
+        angularVel: body.angularVel,
+        torque: body.torque,
+        width: body.width,
+        height: body.height,
+        radius: body.radius,
+        materialId: body.materialId,
+        massOverride: body.massOverride,
+        magnetic: body.magnetic,
+        setup: body.setup,
       })),
       constraints: state.constraints,
       tracking: state.tracking,
+      selectedBodyId: state.selectedBodyId,
+      selectedMaterialId: state.selectedMaterialId,
     };
     getEl("projectJson").value = JSON.stringify(payload, null, 2);
   }
@@ -341,27 +1117,120 @@
   function importProject() {
     try {
       const data = JSON.parse(getEl("projectJson").value);
+      state.materials = (data.materials || MATERIAL_PRESETS).map((material) => ({ ...material }));
+      if (!state.materials.length) state.materials = MATERIAL_PRESETS.map((material) => ({ ...material }));
+
+      state.display = {
+        fieldArrowSpacing: Number(data.display?.fieldArrowSpacing) || 72,
+        fieldSampleResolution: Number(data.display?.fieldSampleResolution) || 18,
+        fieldScale: Number(data.display?.fieldScale) || 1800,
+      };
+
       state.bodies = [];
-      state.constraints = [];
-      state.tracking = data.tracking || { bodyId: null, metric: "force", samples: [] };
-      nextBodyId = Number(data.nextBodyId) || 1;
-      worldTime = Number(data.worldTime) || 0;
-      for (const src of data.bodies || []) {
+      for (const source of data.bodies || []) {
         const body = {
-          ...src,
-          pos: v(src.pos.x, src.pos.y),
-          vel: v(src.vel.x, src.vel.y),
+          id: Number(source.id) || nextBodyId++,
+          type: source.type === "circle" ? "circle" : "rectangle",
+          pos: v(Number(source.pos?.x) || 0, Number(source.pos?.y) || 0),
+          vel: v(Number(source.vel?.x) || 0, Number(source.vel?.y) || 0),
           force: v(0, 0),
-          invMass: 1 / Math.max(0.001, src.mass),
+          angle: Number(source.angle) || 0,
+          angularVel: Number(source.angularVel) || 0,
           torque: 0,
-          magneticDirection: src.angle,
+          width: Number(source.width) || 40,
+          height: Number(source.height) || 40,
+          radius: Number(source.radius) || 20,
+          materialId: source.materialId || state.materials[0].id,
+          massOverride: source.massOverride == null ? null : Number(source.massOverride),
+          magnetic: {
+            enabled: Boolean(source.magnetic?.enabled),
+            model: source.magnetic?.model || "permanentDipole",
+            localAngle: Number(source.magnetic?.localAngle) || 0,
+            strength: Math.max(0, Number(source.magnetic?.strength) || 0),
+            polarity: Number(source.magnetic?.polarity) === -1 ? -1 : 1,
+            remanence: Math.max(0, Number(source.magnetic?.remanence) || 0),
+          },
+          setup: source.setup || null,
         };
+        syncBodyDerived(body);
+        body.setup = body.setup
+          ? {
+              ...body.setup,
+              pos: { x: Number(body.setup.pos?.x) || body.pos.x, y: Number(body.setup.pos?.y) || body.pos.y },
+              angle: Number(body.setup.angle) || body.angle,
+              width: Number(body.setup.width) || body.width,
+              height: Number(body.setup.height) || body.height,
+              radius: Number(body.setup.radius) || body.radius,
+              materialId: body.setup.materialId || body.materialId,
+              massOverride: body.setup.massOverride == null ? null : Number(body.setup.massOverride),
+              magnetic: {
+                enabled: Boolean(body.setup.magnetic?.enabled),
+                model: body.setup.magnetic?.model || body.magnetic.model,
+                localAngle: Number(body.setup.magnetic?.localAngle) || body.magnetic.localAngle,
+                strength: Math.max(0, Number(body.setup.magnetic?.strength) || body.magnetic.strength),
+                polarity: Number(body.setup.magnetic?.polarity) === -1 ? -1 : 1,
+                remanence: Math.max(0, Number(body.setup.magnetic?.remanence) || body.magnetic.remanence),
+              },
+            }
+          : captureBodySetup(body);
         state.bodies.push(body);
       }
-      for (const c of data.constraints || []) state.constraints.push(c);
-    } catch (err) {
-      alert(`Invalid project JSON format. Please import a valid Magnetics 2D Lab exported project. ${err.message}`);
+
+      state.constraints = (data.constraints || []).map((constraint) => ({
+        id: constraint.id,
+        aId: Number(constraint.aId),
+        bId: Number(constraint.bId),
+        distance: Math.max(1, Number(constraint.distance) || 1),
+        stiffness: Math.max(0.1, Number(constraint.stiffness) || 0.1),
+      }));
+      state.tracking = data.tracking || { bodyId: null, metric: "force", samples: [] };
+      state.tracking.samples = [];
+      nextBodyId = Math.max(Number(data.nextBodyId) || 1, ...state.bodies.map((body) => body.id + 1), 1);
+      customMaterialCounter = Number(data.customMaterialCounter) || customMaterialCounter;
+      worldTime = Number(data.worldTime) || 0;
+      state.selectedBodyId = data.selectedBodyId || state.bodies[0]?.id || null;
+      state.selectedMaterialId = data.selectedMaterialId || state.materials[0]?.id || null;
+      accumulator = 0;
+      running = false;
+      getEl("startPauseBtn").textContent = "Start";
+      syncDisplayInputs();
+      refreshUiLists();
+      loadSelectedBodyIntoForm();
+    } catch (error) {
+      alert(`Invalid project JSON format. Please import a valid Magnetics 2D Lab project. ${error.message}`);
     }
+  }
+
+  function syncDisplayInputs() {
+    getEl("fieldSpacing").value = state.display.fieldArrowSpacing;
+    getEl("fieldResolution").value = state.display.fieldSampleResolution;
+    getEl("fieldScale").value = state.display.fieldScale;
+  }
+
+  function applyDisplayInputs() {
+    state.display.fieldArrowSpacing = Math.max(16, Number(getEl("fieldSpacing").value) || 72);
+    state.display.fieldSampleResolution = Math.max(4, Number(getEl("fieldResolution").value) || 18);
+    state.display.fieldScale = Math.max(10, Number(getEl("fieldScale").value) || 1800);
+  }
+
+  function pointInBody(point, body) {
+    if (body.type === "circle") return len(sub(point, body.pos)) <= body.radius;
+    const local = inverseRotate(sub(point, body.pos), body.angle);
+    return Math.abs(local.x) <= body.width * 0.5 && Math.abs(local.y) <= body.height * 0.5;
+  }
+
+  function pickBody(point) {
+    for (let i = state.bodies.length - 1; i >= 0; i -= 1) {
+      if (pointInBody(point, state.bodies[i])) return state.bodies[i];
+    }
+    return null;
+  }
+
+  function toggleShapeInputs() {
+    const isCircle = getEl("shapeType").value === "circle";
+    getEl("shapeW").disabled = isCircle;
+    getEl("shapeH").disabled = isCircle;
+    getEl("shapeR").disabled = !isCircle;
   }
 
   function wireUi() {
@@ -369,28 +1238,37 @@
       running = !running;
       getEl("startPauseBtn").textContent = running ? "Pause" : "Start";
     });
+
     getEl("stepBtn").addEventListener("click", () => step(FIXED_DT));
-    getEl("resetBtn").addEventListener("click", () => {
-      state.bodies = [];
-      state.constraints = [];
-      state.tracking.samples = [];
-      nextBodyId = 1;
-      worldTime = 0;
+    getEl("resetBtn").addEventListener("click", resetDynamics);
+    getEl("clearProjectBtn").addEventListener("click", clearProject);
+
+    getEl("addShapeBtn").addEventListener("click", () => addBody(readShapeInput()));
+    getEl("updateShapeBtn").addEventListener("click", () => {
+      const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+      if (!body) return;
+      updateBodyFromInput(body, readShapeInput());
     });
-    getEl("addShapeBtn").addEventListener("click", () => {
-      addBody({
-        type: getEl("shapeType").value,
-        x: Number(getEl("shapeX").value),
-        y: Number(getEl("shapeY").value),
-        width: Number(getEl("shapeW").value),
-        height: Number(getEl("shapeH").value),
-        radius: Number(getEl("shapeR").value),
-        mass: Number(getEl("shapeMass").value),
-        angle: (Number(getEl("shapeAngle").value) * Math.PI) / 180,
-        magnetic: getEl("shapeMagnetic").checked,
-        magneticMoment: Number(getEl("shapeMoment").value),
-      });
+    getEl("deleteShapeBtn").addEventListener("click", () => {
+      if (state.selectedBodyId != null) removeBody(state.selectedBodyId);
     });
+
+    getEl("bodySelect").addEventListener("change", (event) => {
+      const value = event.target.value;
+      if (!value) {
+        state.selectedBodyId = null;
+        clearShapeForm();
+        return;
+      }
+      setSelectedBody(Number(value));
+    });
+
+    getEl("shapeType").addEventListener("change", toggleShapeInputs);
+    getEl("shapeMaterial").addEventListener("change", () => {
+      const material = materialById(getEl("shapeMaterial").value);
+      if (!getEl("shapeMass").value.trim()) getEl("shapeRemanence").value = material.remanenceDefault.toFixed(2);
+    });
+
     getEl("addConstraintBtn").addEventListener("click", () => {
       addConstraint(
         Number(getEl("constraintA").value),
@@ -399,43 +1277,105 @@
         Number(getEl("constraintK").value)
       );
     });
+
+    getEl("materialSelect").addEventListener("change", (event) => loadMaterialIntoForm(event.target.value));
+    getEl("newMaterialBtn").addEventListener("click", () => {
+      state.selectedMaterialId = null;
+      getEl("materialSelect").value = "";
+      getEl("materialName").value = `Custom Material ${customMaterialCounter}`;
+      getEl("materialDensity").value = 7.8;
+      getEl("materialPermeability").value = 10;
+      getEl("materialSusceptibility").value = 0.4;
+      getEl("materialConductivity").value = 5;
+      getEl("materialRemanence").value = 0.5;
+    });
+    getEl("saveMaterialBtn").addEventListener("click", saveMaterial);
+    getEl("deleteMaterialBtn").addEventListener("click", deleteMaterial);
+
+    for (const id of ["fieldSpacing", "fieldResolution", "fieldScale"]) {
+      getEl(id).addEventListener("input", applyDisplayInputs);
+    }
+
     getEl("startTrackingBtn").addEventListener("click", () => {
-      state.tracking.bodyId = Number(getEl("trackBody").value);
+      state.tracking.bodyId = Number(getEl("trackBody").value) || null;
       state.tracking.metric = getEl("trackMetric").value;
       state.tracking.samples = [];
     });
     getEl("clearTrackingBtn").addEventListener("click", () => {
       state.tracking.samples = [];
     });
+
     getEl("exportBtn").addEventListener("click", exportProject);
     getEl("importBtn").addEventListener("click", importProject);
+
+    simCanvas.addEventListener("click", (event) => {
+      const rect = simCanvas.getBoundingClientRect();
+      const scaleX = simCanvas.width / rect.width;
+      const scaleY = simCanvas.height / rect.height;
+      const point = v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
+      const body = pickBody(point);
+      if (body) setSelectedBody(body.id);
+    });
   }
 
   wireUi();
+  refreshUiLists();
+  clearShapeForm();
+  syncDisplayInputs();
+
   addBody({
     type: "rectangle",
-    x: 240,
-    y: 280,
-    width: 110,
-    height: 54,
+    x: 250,
+    y: 250,
+    width: 120,
+    height: 52,
     radius: 20,
-    mass: 1.3,
     angle: 0.3,
-    magnetic: true,
-    magneticMoment: 55,
+    massOverride: null,
+    materialId: "steel",
+    magneticEnabled: true,
+    magneticModel: "permanentDipole",
+    magneticAngle: 0,
+    magneticPolarity: 1,
+    magneticStrength: 28,
+    magneticRemanence: 0.22,
   });
   addBody({
     type: "circle",
-    x: 550,
-    y: 260,
+    x: 560,
+    y: 250,
     width: 40,
     height: 40,
-    radius: 34,
-    mass: 1.1,
-    angle: -0.4,
-    magnetic: true,
-    magneticMoment: 52,
+    radius: 36,
+    angle: -0.3,
+    massOverride: null,
+    materialId: "neodymium",
+    magneticEnabled: true,
+    magneticModel: "permanentDipole",
+    magneticAngle: 0,
+    magneticPolarity: -1,
+    magneticStrength: 36,
+    magneticRemanence: 1.28,
   });
-  addConstraint(1, 2, 260, 2.6);
+  addBody({
+    type: "rectangle",
+    x: 430,
+    y: 430,
+    width: 150,
+    height: 30,
+    radius: 20,
+    angle: 0.15,
+    massOverride: 4.8,
+    materialId: "iron",
+    magneticEnabled: false,
+    magneticModel: "inducedDipole",
+    magneticAngle: 0,
+    magneticPolarity: 1,
+    magneticStrength: 8,
+    magneticRemanence: 0.12,
+  });
+  addConstraint(1, 2, 250, 4.2);
+  setSelectedBody(1);
+
   requestAnimationFrame(frame);
 })();
