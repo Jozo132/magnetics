@@ -15,6 +15,11 @@
   const MAGNETIC_TORQUE_SCALE = 0.45;
   const MAX_MAGNETIC_FORCE = 16000;
   const MIN_MAGNETIC_DISTANCE = 18;
+  const MAGNETIC_GRADIENT_EPSILON_SCALE = 0.07;
+  const MIN_MAGNETIC_GRADIENT_EPSILON = 2;
+  const MAX_MAGNETIC_GRADIENT_EPSILON = 10;
+  const MIN_FIELD_SCALE = 10;
+  const MAX_FIELD_SCALE = 100000;
   const POSITION_CORRECTION_PERCENT = 0.72;
   const POSITION_CORRECTION_SLOP = 0.01;
   const DEFAULT_RESTITUTION = 0.32;
@@ -631,7 +636,11 @@
 
         const delta = sub(b.pos, a.pos);
         const distance = Math.max(MIN_MAGNETIC_DISTANCE, len(delta));
-        const epsilon = clamp(distance * 0.07, 2, 10);
+        const epsilon = clamp(
+          distance * MAGNETIC_GRADIENT_EPSILON_SCALE,
+          MIN_MAGNETIC_GRADIENT_EPSILON,
+          MAX_MAGNETIC_GRADIENT_EPSILON
+        );
         const momentB = magneticMoment(b);
         const momentA = magneticMoment(a);
 
@@ -940,7 +949,7 @@
   function drawField() {
     const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 72, 16, 200);
     const resolution = clamp(Number(state.display.fieldSampleResolution) || 18, 4, arrowSpacing);
-    const scale = clamp(Number(state.display.fieldScale) || 1800, 10, 100000);
+    const scale = clamp(Number(state.display.fieldScale) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
     const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
     const offsetStart = -((subsamples - 1) * resolution) / 2;
 
@@ -1214,7 +1223,7 @@
   function applyDisplayInputs() {
     state.display.fieldArrowSpacing = Math.max(16, Number(getEl("fieldSpacing").value) || 72);
     state.display.fieldSampleResolution = Math.max(4, Number(getEl("fieldResolution").value) || 18);
-    state.display.fieldScale = Math.max(10, Number(getEl("fieldScale").value) || 1800);
+    state.display.fieldScale = clamp(Number(getEl("fieldScale").value) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
   }
 
   function pointInBody(point, body) {
