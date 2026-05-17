@@ -22,7 +22,9 @@
   const MAX_FIELD_SCALE = 100000;
   const MAX_FIELD_ARROW_LENGTH = 26;
   const MIN_FIELD_ARROW_LENGTH = 3.5;
+  const FIELD_ARROW_LENGTH_SCALE_DIVISOR = 1500;
   const FIELD_STRENGTH_RATIO_DIVISOR = 5;
+  const ARROW_STRENGTH_NORMALIZER = 18;
   const MIN_POLE_INFLUENCE_DISTANCE_SQUARED = 36;
   const POSITION_CORRECTION_PERCENT = 0.72;
   const POSITION_CORRECTION_SLOP = 0.01;
@@ -869,8 +871,10 @@
       if (!magneticEnabled(body)) continue;
       const strength = Math.max(1, body.magnetic.strength * Math.max(0.05, body.magnetic.remanence));
       const poles = magneticPolePositions(body);
-      const northDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(sub(point, poles.north), sub(point, poles.north)));
-      const southDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(sub(point, poles.south), sub(point, poles.south)));
+      const northDelta = sub(point, poles.north);
+      const southDelta = sub(point, poles.south);
+      const northDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(northDelta, northDelta));
+      const southDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(southDelta, southDelta));
       northInfluence += strength / northDistance;
       southInfluence += strength / southDistance;
     }
@@ -1197,7 +1201,7 @@
   function drawArrow(base, vector, color, strengthScale = null) {
     const magnitude = len(vector);
     if (magnitude < 0.001) return;
-    const normalizedStrength = clamp(strengthScale == null ? magnitude / 18 : strengthScale, 0.18, 1);
+    const normalizedStrength = clamp(strengthScale == null ? magnitude / ARROW_STRENGTH_NORMALIZER : strengthScale, 0.18, 1);
     const strokeWidth = lerp(0.75, 2.3, normalizedStrength);
     const headLength = lerp(4, 10, normalizedStrength);
     const headWidth = lerp(2, 5.5, normalizedStrength);
@@ -1253,7 +1257,8 @@
           1
         );
         const arrowLength =
-          clamp(magnitude * (scale / 1500), MIN_FIELD_ARROW_LENGTH, MAX_FIELD_ARROW_LENGTH) * lerp(0.7, 1, strengthRatio);
+          clamp(magnitude * (scale / FIELD_ARROW_LENGTH_SCALE_DIVISOR), MIN_FIELD_ARROW_LENGTH, MAX_FIELD_ARROW_LENGTH) *
+          lerp(0.7, 1, strengthRatio);
         const worldPoint = screenToWorld(v(x, y));
         drawArrow(v(x, y), mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
       }
