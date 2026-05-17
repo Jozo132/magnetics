@@ -50,11 +50,28 @@
         <div class="modal-body">
           <section id="shapePanel" class="editor-panel">
             <div class="panel-section">
+              <div class="section-heading">
+                <h3>Shapes</h3>
+                <button id="newShapeBtn" type="button">New Shape</button>
+              </div>
+              <div class="table-list-wrap">
+                <table class="table-list">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Type</th>
+                      <th>Material</th>
+                      <th>Magnetic</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="shapeTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-section">
               <h3>Shape Editor</h3>
               <div class="grid">
-                <label>Selected Body
-                  <select id="bodySelect"></select>
-                </label>
                 <label>Type
                   <select id="shapeType">
                     <option value="rectangle">Rectangle</option>
@@ -103,11 +120,28 @@
 
           <section id="constraintPanel" class="editor-panel hidden">
             <div class="panel-section">
+              <div class="section-heading">
+                <h3>Constraints</h3>
+                <button id="newConstraintBtn" type="button">New Constraint</button>
+              </div>
+              <div class="table-list-wrap">
+                <table class="table-list">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Body A</th>
+                      <th>Body B</th>
+                      <th>Distance</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="constraintTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel-section">
               <h3>Constraint Editor</h3>
               <div class="grid">
-                <label>Selected Constraint
-                  <select id="constraintSelect"></select>
-                </label>
                 <label>Body A <select id="constraintA"></select></label>
                 <label>Body B <select id="constraintB"></select></label>
                 <label>Distance <input id="constraintDist" type="number" value="120" min="1" /></label>
@@ -149,6 +183,7 @@
                   <label>Arrow Spacing <input id="fieldSpacing" type="number" value="22" min="8" step="2" /></label>
                   <label>Sample Resolution <input id="fieldResolution" type="number" value="6" min="2" step="1" /></label>
                   <label>Field Scale <input id="fieldScale" type="number" value="1800" min="10" step="10" /></label>
+                  <label>Arrow Threshold <input id="fieldThreshold" type="number" value="0.01" min="0" step="0.001" /></label>
                 </div>
               </div>
 

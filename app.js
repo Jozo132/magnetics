@@ -20,10 +20,22 @@
   const MAX_MAGNETIC_GRADIENT_EPSILON = 10;
   const MIN_FIELD_SCALE = 10;
   const MAX_FIELD_SCALE = 100000;
+  const MAX_FIELD_ARROW_LENGTH = 26;
+  const MIN_FIELD_ARROW_LENGTH = 3.5;
+  const FIELD_ARROW_LENGTH_SCALE_DIVISOR = 1500;
+  const FIELD_STRENGTH_RATIO_DIVISOR = 5;
+  const ARROW_STRENGTH_NORMALIZER = 18;
+  const MIN_ARROW_STRENGTH_SCALE = 0.18;
+  const MIN_POLE_INFLUENCE_DISTANCE_SQUARED = 36;
   const POSITION_CORRECTION_PERCENT = 0.72;
   const POSITION_CORRECTION_SLOP = 0.01;
   const DEFAULT_RESTITUTION = 0.32;
   const DEFAULT_FRICTION = 0.42;
+  const LEFT_MOUSE_BUTTON = 0;
+  const RIGHT_MOUSE_BUTTON = 2;
+  const DEFAULT_FIELD_ARROW_COLOR = "rgba(147,197,253,0.5)";
+  const SOUTH_POLE_COLOR = { r: 96, g: 165, b: 250 };
+  const NORTH_POLE_COLOR = { r: 248, g: 113, b: 113 };
 
   const MATERIAL_PRESETS = [
     {
@@ -115,6 +127,7 @@
       fieldArrowSpacing: 22,
       fieldSampleResolution: 6,
       fieldScale: 1800,
+      fieldThreshold: 0.01,
     },
     tracking: {
       bodyId: null,
@@ -125,6 +138,12 @@
     selectedConstraintId: null,
     selectedMaterialId: "steel",
     editorView: "shape",
+    view: {
+      pan: { x: 0, y: 0 },
+      isPanning: false,
+      inputSource: null,
+      lastPointerClient: { x: 0, y: 0 },
+    },
   };
 
   const v = (x = 0, y = 0) => ({ x, y });
@@ -141,6 +160,7 @@
     return v(a.x / magnitude, a.y / magnitude);
   };
   const perp = (a) => v(-a.y, a.x);
+  const lerp = (a, b, t) => a + (b - a) * t;
   const rotate = (point, angle) => {
     const c = Math.cos(angle);
     const s = Math.sin(angle);
@@ -151,6 +171,25 @@
 
   function getEl(id) {
     return document.getElementById(id);
+  }
+
+  function screenToWorld(point) {
+    return sub(point, state.view.pan);
+  }
+
+  function worldToScreen(point) {
+    return add(point, state.view.pan);
+  }
+
+  function canvasPointFromMouseEvent(event) {
+    const rect = simCanvas.getBoundingClientRect();
+    const scaleX = simCanvas.width / rect.width;
+    const scaleY = simCanvas.height / rect.height;
+    return v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
+  }
+
+  function worldPointFromMouseEvent(event) {
+    return screenToWorld(canvasPointFromMouseEvent(event));
   }
 
   function materialById(materialId) {
@@ -428,7 +467,6 @@
   }
 
   function clearShapeForm() {
-    getEl("bodySelect").value = "";
     getEl("shapeType").value = "rectangle";
     getEl("shapeX").value = 180;
     getEl("shapeY").value = 180;
@@ -450,9 +488,8 @@
 
   function setSelectedBody(bodyId) {
     state.selectedBodyId = bodyId == null ? null : Number(bodyId);
-    const select = getEl("bodySelect");
-    select.value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
     loadSelectedBodyIntoForm();
+    refreshShapeTable();
     refreshStatusSummary();
   }
 
@@ -493,7 +530,6 @@
   }
 
   function populateConstraintForm(constraint) {
-    getEl("constraintSelect").value = constraint.id;
     getEl("constraintA").value = String(constraint.aId);
     getEl("constraintB").value = String(constraint.bId);
     getEl("constraintDist").value = constraint.distance.toFixed(2);
@@ -501,7 +537,6 @@
   }
 
   function clearConstraintForm() {
-    getEl("constraintSelect").value = "";
     const [firstBody, secondBody] = state.bodies;
     getEl("constraintA").value = firstBody ? String(firstBody.id) : "";
 
@@ -517,6 +552,7 @@
   function setSelectedConstraint(constraintId) {
     state.selectedConstraintId = constraintId || null;
     loadSelectedConstraintIntoForm();
+    refreshConstraintTable();
   }
 
   function loadSelectedConstraintIntoForm() {
@@ -543,7 +579,6 @@
 
   function refreshBodyOptions() {
     const bodyLabel = (body) => `${body.fixed ? "📌 " : ""}#${body.id} ${body.type} (${materialById(body.materialId).name})`;
-    refreshSelect(getEl("bodySelect"), state.bodies, (body) => body.id, bodyLabel, "New body");
     refreshSelect(getEl("constraintA"), state.bodies, (body) => body.id, bodyLabel);
     refreshSelect(getEl("constraintB"), state.bodies, (body) => body.id, bodyLabel);
     refreshSelect(getEl("trackBody"), state.bodies, (body) => body.id, bodyLabel);
@@ -555,21 +590,94 @@
       state.tracking.bodyId = state.bodies[0]?.id ?? null;
     }
 
-    getEl("bodySelect").value = state.selectedBodyId == null ? "" : String(state.selectedBodyId);
     getEl("trackBody").value = state.tracking.bodyId == null ? "" : String(state.tracking.bodyId);
   }
 
   function refreshConstraintOptions() {
-    const constraintLabel = (constraint) => {
-      const a = state.bodies.find((body) => body.id === constraint.aId);
-      const b = state.bodies.find((body) => body.id === constraint.bId);
-      return `${constraint.id}: ${a ? `#${a.id}` : "?"} ↔ ${b ? `#${b.id}` : "?"}`;
-    };
-    refreshSelect(getEl("constraintSelect"), state.constraints, (constraint) => constraint.id, constraintLabel, "New constraint");
     if (state.selectedConstraintId != null && !state.constraints.some((constraint) => constraint.id === state.selectedConstraintId)) {
       state.selectedConstraintId = null;
     }
-    getEl("constraintSelect").value = state.selectedConstraintId == null ? "" : state.selectedConstraintId;
+  }
+
+  function appendTableCell(row, text, className = "") {
+    const cell = document.createElement("td");
+    if (className) cell.className = className;
+    cell.textContent = text;
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function makeTableActionButton(label, action, datasetKey, datasetValue) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.dataset.action = action;
+    button.dataset[datasetKey] = datasetValue;
+    return button;
+  }
+
+  function refreshShapeTable() {
+    const tbody = getEl("shapeTableBody");
+    tbody.innerHTML = "";
+    if (!state.bodies.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="empty-cell" colspan="5">No shapes yet.</td>';
+      tbody.appendChild(row);
+      return;
+    }
+
+    for (const body of state.bodies) {
+      const row = document.createElement("tr");
+      if (body.id === state.selectedBodyId) row.classList.add("selected");
+      const material = materialById(body.materialId);
+      const magneticLabel = magneticEnabled(body)
+        ? `${body.magnetic.model === "inducedDipole" ? "Induced" : "Permanent"} · ${body.magnetic.polarity === -1 ? "S→N" : "N→S"}`
+        : "No";
+      row.dataset.bodyId = String(body.id);
+      appendTableCell(row, `#${body.id}${body.fixed ? " 📌" : ""}`);
+      appendTableCell(row, body.type);
+      appendTableCell(row, material.name);
+      appendTableCell(row, magneticLabel);
+      const actionCell = document.createElement("td");
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "table-actions";
+      actionWrap.appendChild(makeTableActionButton("Edit", "edit-body", "bodyId", String(body.id)));
+      actionWrap.appendChild(makeTableActionButton("Delete", "delete-body", "bodyId", String(body.id)));
+      actionCell.appendChild(actionWrap);
+      row.appendChild(actionCell);
+      tbody.appendChild(row);
+    }
+  }
+
+  function refreshConstraintTable() {
+    const tbody = getEl("constraintTableBody");
+    tbody.innerHTML = "";
+    if (!state.constraints.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="empty-cell" colspan="5">No constraints yet.</td>';
+      tbody.appendChild(row);
+      return;
+    }
+
+    for (const constraint of state.constraints) {
+      const row = document.createElement("tr");
+      if (constraint.id === state.selectedConstraintId) row.classList.add("selected");
+      const a = state.bodies.find((body) => body.id === constraint.aId);
+      const b = state.bodies.find((body) => body.id === constraint.bId);
+      row.dataset.constraintId = constraint.id;
+      appendTableCell(row, constraint.id);
+      appendTableCell(row, a ? `#${a.id}` : "?");
+      appendTableCell(row, b ? `#${b.id}` : "?");
+      appendTableCell(row, constraint.distance.toFixed(2));
+      const actionCell = document.createElement("td");
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "table-actions";
+      actionWrap.appendChild(makeTableActionButton("Edit", "edit-constraint", "constraintId", constraint.id));
+      actionWrap.appendChild(makeTableActionButton("Delete", "delete-constraint", "constraintId", constraint.id));
+      actionCell.appendChild(actionWrap);
+      row.appendChild(actionCell);
+      tbody.appendChild(row);
+    }
   }
 
   function refreshStatusSummary() {
@@ -586,6 +694,8 @@
     refreshMaterialOptions();
     refreshBodyOptions();
     refreshConstraintOptions();
+    refreshShapeTable();
+    refreshConstraintTable();
     refreshStatusSummary();
   }
 
@@ -683,6 +793,9 @@
     state.tracking = { bodyId: null, metric: "force", samples: [] };
     state.selectedBodyId = null;
     state.selectedConstraintId = null;
+    state.view.pan = v(0, 0);
+    state.view.isPanning = false;
+    state.view.inputSource = null;
     refreshUiLists();
     clearShapeForm();
     clearConstraintForm();
@@ -741,6 +854,46 @@
       field = add(field, dipoleFieldFromBodyAtPoint(body, point));
     }
     return field;
+  }
+
+  function magneticPolePositions(body) {
+    const axis = magneticAxis(body);
+    const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.5;
+    const northSign = body.magnetic.polarity === -1 ? -1 : 1;
+    return {
+      north: add(body.pos, mul(axis, extent * northSign)),
+      south: add(body.pos, mul(axis, -extent * northSign)),
+    };
+  }
+
+  function magneticPoleBiasAtPoint(point) {
+    let northInfluence = 0;
+    let southInfluence = 0;
+    for (const body of state.bodies) {
+      if (!magneticEnabled(body)) continue;
+      const strength = Math.max(1, body.magnetic.strength * Math.max(0.05, body.magnetic.remanence));
+      const poles = magneticPolePositions(body);
+      const northDelta = sub(point, poles.north);
+      const southDelta = sub(point, poles.south);
+      const northDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(northDelta, northDelta));
+      const southDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(southDelta, southDelta));
+      northInfluence += strength / northDistance;
+      southInfluence += strength / southDistance;
+    }
+    return { northInfluence, southInfluence };
+  }
+
+  function fieldArrowColorAtPoint(point) {
+    const { northInfluence, southInfluence } = magneticPoleBiasAtPoint(point);
+    const totalInfluence = northInfluence + southInfluence;
+    if (totalInfluence <= 1e-6) return DEFAULT_FIELD_ARROW_COLOR;
+    const blend = clamp((northInfluence - southInfluence) / totalInfluence, -1, 1);
+    const northDominanceRatio = (blend + 1) * 0.5;
+    const red = Math.round(lerp(SOUTH_POLE_COLOR.r, NORTH_POLE_COLOR.r, northDominanceRatio));
+    const green = Math.round(lerp(SOUTH_POLE_COLOR.g, NORTH_POLE_COLOR.g, northDominanceRatio));
+    const blue = Math.round(lerp(SOUTH_POLE_COLOR.b, NORTH_POLE_COLOR.b, northDominanceRatio));
+    const alpha = lerp(0.42, 0.82, Math.abs(blend));
+    return `rgba(${red},${green},${blue},${alpha.toFixed(3)})`;
   }
 
   function applyMagnetics() {
@@ -1047,12 +1200,21 @@
     sampleTracking();
   }
 
-  function drawArrow(base, vector, color) {
+  function drawArrow(base, vector, color, strengthScale = null) {
     const magnitude = len(vector);
     if (magnitude < 0.001) return;
+    const normalizedStrength = clamp(
+      strengthScale == null ? magnitude / ARROW_STRENGTH_NORMALIZER : strengthScale,
+      MIN_ARROW_STRENGTH_SCALE,
+      1
+    );
+    const strokeWidth = lerp(0.75, 2.3, normalizedStrength);
+    const headLength = lerp(4, 10, normalizedStrength);
+    const headWidth = lerp(2, 5.5, normalizedStrength);
     const target = add(base, vector);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
+    ctx.lineWidth = strokeWidth;
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
     ctx.lineTo(target.x, target.y);
@@ -1061,8 +1223,14 @@
     const normal = perp(direction);
     ctx.beginPath();
     ctx.moveTo(target.x, target.y);
-    ctx.lineTo(target.x - direction.x * 8 + normal.x * 4, target.y - direction.y * 8 + normal.y * 4);
-    ctx.lineTo(target.x - direction.x * 8 - normal.x * 4, target.y - direction.y * 8 - normal.y * 4);
+    ctx.lineTo(
+      target.x - direction.x * headLength + normal.x * headWidth,
+      target.y - direction.y * headLength + normal.y * headWidth
+    );
+    ctx.lineTo(
+      target.x - direction.x * headLength - normal.x * headWidth,
+      target.y - direction.y * headLength - normal.y * headWidth
+    );
     ctx.closePath();
     ctx.fill();
   }
@@ -1071,25 +1239,35 @@
     const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 22, 8, 200);
     const resolution = clamp(Number(state.display.fieldSampleResolution) || 6, 2, arrowSpacing);
     const scale = clamp(Number(state.display.fieldScale) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
+    const threshold = Math.max(0, Number(state.display.fieldThreshold) || 0);
     const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
     const offsetStart = -((subsamples - 1) * resolution) / 2;
 
     for (let y = arrowSpacing / 2; y < simCanvas.height; y += arrowSpacing) {
       for (let x = arrowSpacing / 2; x < simCanvas.width; x += arrowSpacing) {
+        const screenPoint = v(x, y);
+        const worldPoint = screenToWorld(screenPoint);
         let field = v(0, 0);
         let count = 0;
         for (let sy = 0; sy < subsamples; sy += 1) {
           for (let sx = 0; sx < subsamples; sx += 1) {
-            const sample = v(x + offsetStart + sx * resolution, y + offsetStart + sy * resolution);
+            const sample = screenToWorld(v(x + offsetStart + sx * resolution, y + offsetStart + sy * resolution));
             field = add(field, magneticFieldAtPoint(sample));
             count += 1;
           }
         }
         field = mul(field, 1 / count);
         const magnitude = len(field);
-        if (magnitude < 0.002) continue;
-        const arrowLength = Math.min(26, magnitude * (scale / 1500));
-        drawArrow(v(x, y), mul(unit(field), arrowLength), "rgba(147,197,253,0.58)");
+        if (magnitude < threshold) continue;
+        const arrowLength =
+          clamp(magnitude * (scale / FIELD_ARROW_LENGTH_SCALE_DIVISOR), MIN_FIELD_ARROW_LENGTH, MAX_FIELD_ARROW_LENGTH) *
+          lerp(
+            0.7,
+            1,
+            clamp((magnitude - threshold) / Math.max(FIELD_STRENGTH_RATIO_DIVISOR, 1), MIN_ARROW_STRENGTH_SCALE, 1)
+          );
+        const strengthRatio = clamp(arrowLength / MAX_FIELD_ARROW_LENGTH, MIN_ARROW_STRENGTH_SCALE, 1);
+        drawArrow(worldToScreen(worldPoint), mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
       }
     }
   }
@@ -1155,6 +1333,8 @@
     ctx.clearRect(0, 0, simCanvas.width, simCanvas.height);
     drawField();
 
+    ctx.save();
+    ctx.translate(state.view.pan.x, state.view.pan.y);
     ctx.strokeStyle = "#22d3ee";
     ctx.lineWidth = 1;
     for (const constraint of state.constraints) {
@@ -1168,6 +1348,7 @@
     }
 
     for (const body of state.bodies) drawBody(body);
+    ctx.restore();
   }
 
   function renderPlot() {
@@ -1261,6 +1442,7 @@
         fieldArrowSpacing: Number(data.display?.fieldArrowSpacing) || 22,
         fieldSampleResolution: Number(data.display?.fieldSampleResolution) || 6,
         fieldScale: Number(data.display?.fieldScale) || 1800,
+        fieldThreshold: Math.max(0, Number(data.display?.fieldThreshold) || 0.01),
       };
 
       state.bodies = [];
@@ -1337,6 +1519,9 @@
       state.selectedBodyId = data.selectedBodyId || state.bodies[0]?.id || null;
       state.selectedConstraintId = data.selectedConstraintId || null;
       state.selectedMaterialId = data.selectedMaterialId || state.materials[0]?.id || null;
+      state.view.pan = v(0, 0);
+      state.view.isPanning = false;
+      state.view.inputSource = null;
       accumulator = 0;
       running = false;
       getEl("startPauseBtn").textContent = "Start";
@@ -1353,12 +1538,14 @@
     getEl("fieldSpacing").value = state.display.fieldArrowSpacing;
     getEl("fieldResolution").value = state.display.fieldSampleResolution;
     getEl("fieldScale").value = state.display.fieldScale;
+    getEl("fieldThreshold").value = state.display.fieldThreshold;
   }
 
   function applyDisplayInputs() {
     state.display.fieldArrowSpacing = Math.max(8, Number(getEl("fieldSpacing").value) || 22);
     state.display.fieldSampleResolution = Math.max(2, Number(getEl("fieldResolution").value) || 6);
     state.display.fieldScale = clamp(Number(getEl("fieldScale").value) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
+    state.display.fieldThreshold = Math.max(0, Number(getEl("fieldThreshold").value) || 0);
   }
 
   function pointInBody(point, body) {
@@ -1433,6 +1620,12 @@
     getEl("addShapeBtn").addEventListener("click", () => {
       addBody(readShapeInput());
     });
+    getEl("newShapeBtn").addEventListener("click", () => {
+      state.selectedBodyId = null;
+      clearShapeForm();
+      refreshShapeTable();
+      refreshStatusSummary();
+    });
     getEl("updateShapeBtn").addEventListener("click", () => {
       const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
       if (!body) return;
@@ -1442,15 +1635,16 @@
       if (state.selectedBodyId != null) removeBody(state.selectedBodyId);
     });
 
-    getEl("bodySelect").addEventListener("change", (event) => {
-      const value = event.target.value;
-      if (!value) {
-        state.selectedBodyId = null;
-        clearShapeForm();
-        refreshStatusSummary();
+    getEl("shapeTableBody").addEventListener("click", (event) => {
+      const actionButton = event.target.closest("button[data-action]");
+      if (actionButton) {
+        const bodyId = Number(actionButton.dataset.bodyId);
+        if (actionButton.dataset.action === "edit-body") setSelectedBody(bodyId);
+        if (actionButton.dataset.action === "delete-body") removeBody(bodyId);
         return;
       }
-      setSelectedBody(Number(value));
+      const row = event.target.closest("tr[data-body-id]");
+      if (row) setSelectedBody(Number(row.dataset.bodyId));
     });
 
     getEl("shapeType").addEventListener("change", toggleShapeInputs);
@@ -1459,16 +1653,11 @@
       getEl("shapeRemanence").value = material.remanenceDefault.toFixed(2);
     });
 
-    getEl("constraintSelect").addEventListener("change", (event) => {
-      const value = event.target.value;
-      if (!value) {
-        state.selectedConstraintId = null;
-        clearConstraintForm();
-        return;
-      }
-      setSelectedConstraint(value);
+    getEl("newConstraintBtn").addEventListener("click", () => {
+      state.selectedConstraintId = null;
+      clearConstraintForm();
+      refreshConstraintTable();
     });
-
     getEl("addConstraintBtn").addEventListener("click", () => {
       addConstraint(readConstraintInput());
     });
@@ -1479,6 +1668,17 @@
     });
     getEl("deleteConstraintBtn").addEventListener("click", () => {
       if (state.selectedConstraintId != null) removeConstraint(state.selectedConstraintId);
+    });
+    getEl("constraintTableBody").addEventListener("click", (event) => {
+      const actionButton = event.target.closest("button[data-action]");
+      if (actionButton) {
+        const constraintId = actionButton.dataset.constraintId;
+        if (actionButton.dataset.action === "edit-constraint") setSelectedConstraint(constraintId);
+        if (actionButton.dataset.action === "delete-constraint") removeConstraint(constraintId);
+        return;
+      }
+      const row = event.target.closest("tr[data-constraint-id]");
+      if (row) setSelectedConstraint(row.dataset.constraintId);
     });
 
     getEl("materialSelect").addEventListener("change", (event) => loadMaterialIntoForm(event.target.value));
@@ -1495,7 +1695,7 @@
     getEl("saveMaterialBtn").addEventListener("click", saveMaterial);
     getEl("deleteMaterialBtn").addEventListener("click", deleteMaterial);
 
-    for (const id of ["fieldSpacing", "fieldResolution", "fieldScale"]) {
+    for (const id of ["fieldSpacing", "fieldResolution", "fieldScale", "fieldThreshold"]) {
       getEl(id).addEventListener("input", applyDisplayInputs);
     }
 
@@ -1511,12 +1711,44 @@
     getEl("exportBtn").addEventListener("click", exportProject);
     getEl("importBtn").addEventListener("click", importProject);
 
-    simCanvas.addEventListener("click", (event) => {
+    simCanvas.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
+    simCanvas.addEventListener("mousedown", (event) => {
+      if (event.button !== RIGHT_MOUSE_BUTTON) return;
+      event.preventDefault();
+      state.view.isPanning = true;
+      state.view.inputSource = "mouse";
+      state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
+      simCanvas.classList.add("is-panning");
+    });
+    window.addEventListener("mousemove", (event) => {
+      if (!state.view.isPanning || state.view.inputSource !== "mouse") return;
       const rect = simCanvas.getBoundingClientRect();
       const scaleX = simCanvas.width / rect.width;
       const scaleY = simCanvas.height / rect.height;
-      const point = v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
-      const body = pickBody(point);
+      state.view.pan = add(
+        state.view.pan,
+        v((event.clientX - state.view.lastPointerClient.x) * scaleX, (event.clientY - state.view.lastPointerClient.y) * scaleY)
+      );
+      state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
+    });
+    window.addEventListener("mouseup", (event) => {
+      if (event.button !== RIGHT_MOUSE_BUTTON) return;
+      state.view.isPanning = false;
+      state.view.inputSource = null;
+      simCanvas.classList.remove("is-panning");
+    });
+    window.addEventListener("blur", () => {
+      if (!state.view.isPanning) return;
+      state.view.isPanning = false;
+      state.view.inputSource = null;
+      simCanvas.classList.remove("is-panning");
+    });
+
+    simCanvas.addEventListener("click", (event) => {
+      if (state.view.isPanning || event.button !== LEFT_MOUSE_BUTTON) return;
+      const body = pickBody(worldPointFromMouseEvent(event));
       if (body) {
         setSelectedBody(body.id);
         refreshStatusSummary();
