@@ -24,6 +24,7 @@
   const POSITION_CORRECTION_SLOP = 0.01;
   const DEFAULT_RESTITUTION = 0.32;
   const DEFAULT_FRICTION = 0.42;
+  const RIGHT_MOUSE_BUTTON = 2;
 
   const MATERIAL_PRESETS = [
     {
@@ -129,7 +130,7 @@
     view: {
       pan: { x: 0, y: 0 },
       isPanning: false,
-      pointerId: null,
+      inputSource: null,
       lastPointerClient: { x: 0, y: 0 },
     },
   };
@@ -601,6 +602,23 @@
     getEl("constraintSelect").value = state.selectedConstraintId == null ? "" : state.selectedConstraintId;
   }
 
+  function appendTableCell(row, text, className = "") {
+    const cell = document.createElement("td");
+    if (className) cell.className = className;
+    cell.textContent = text;
+    row.appendChild(cell);
+    return cell;
+  }
+
+  function makeTableActionButton(label, action, datasetKey, datasetValue) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.dataset.action = action;
+    button.dataset[datasetKey] = datasetValue;
+    return button;
+  }
+
   function refreshShapeTable() {
     const tbody = getEl("shapeTableBody");
     tbody.innerHTML = "";
@@ -618,19 +636,18 @@
       const magneticLabel = magneticEnabled(body)
         ? `${body.magnetic.model === "inducedDipole" ? "Induced" : "Permanent"} · ${body.magnetic.polarity === -1 ? "S→N" : "N→S"}`
         : "No";
-      row.innerHTML = `
-        <td>#${body.id}${body.fixed ? " 📌" : ""}</td>
-        <td>${body.type}</td>
-        <td>${material.name}</td>
-        <td>${magneticLabel}</td>
-        <td>
-          <div class="table-actions">
-            <button type="button" data-action="edit-body" data-body-id="${body.id}">Edit</button>
-            <button type="button" data-action="delete-body" data-body-id="${body.id}">Delete</button>
-          </div>
-        </td>
-      `;
       row.dataset.bodyId = String(body.id);
+      appendTableCell(row, `#${body.id}${body.fixed ? " 📌" : ""}`);
+      appendTableCell(row, body.type);
+      appendTableCell(row, material.name);
+      appendTableCell(row, magneticLabel);
+      const actionCell = document.createElement("td");
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "table-actions";
+      actionWrap.appendChild(makeTableActionButton("Edit", "edit-body", "bodyId", String(body.id)));
+      actionWrap.appendChild(makeTableActionButton("Delete", "delete-body", "bodyId", String(body.id)));
+      actionCell.appendChild(actionWrap);
+      row.appendChild(actionCell);
       tbody.appendChild(row);
     }
   }
@@ -650,19 +667,18 @@
       if (constraint.id === state.selectedConstraintId) row.classList.add("selected");
       const a = state.bodies.find((body) => body.id === constraint.aId);
       const b = state.bodies.find((body) => body.id === constraint.bId);
-      row.innerHTML = `
-        <td>${constraint.id}</td>
-        <td>${a ? `#${a.id}` : "?"}</td>
-        <td>${b ? `#${b.id}` : "?"}</td>
-        <td>${constraint.distance.toFixed(2)}</td>
-        <td>
-          <div class="table-actions">
-            <button type="button" data-action="edit-constraint" data-constraint-id="${constraint.id}">Edit</button>
-            <button type="button" data-action="delete-constraint" data-constraint-id="${constraint.id}">Delete</button>
-          </div>
-        </td>
-      `;
       row.dataset.constraintId = constraint.id;
+      appendTableCell(row, constraint.id);
+      appendTableCell(row, a ? `#${a.id}` : "?");
+      appendTableCell(row, b ? `#${b.id}` : "?");
+      appendTableCell(row, constraint.distance.toFixed(2));
+      const actionCell = document.createElement("td");
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "table-actions";
+      actionWrap.appendChild(makeTableActionButton("Edit", "edit-constraint", "constraintId", constraint.id));
+      actionWrap.appendChild(makeTableActionButton("Delete", "delete-constraint", "constraintId", constraint.id));
+      actionCell.appendChild(actionWrap);
+      row.appendChild(actionCell);
       tbody.appendChild(row);
     }
   }
@@ -782,7 +798,7 @@
     state.selectedConstraintId = null;
     state.view.pan = v(0, 0);
     state.view.isPanning = false;
-    state.view.pointerId = null;
+    state.view.inputSource = null;
     refreshUiLists();
     clearShapeForm();
     clearConstraintForm();
@@ -860,8 +876,8 @@
       if (!magneticEnabled(body)) continue;
       const strength = Math.max(1, body.magnetic.strength * Math.max(0.05, body.magnetic.remanence));
       const poles = magneticPolePositions(body);
-      const northDistance = Math.max(36, len(sub(point, poles.north)) ** 2);
-      const southDistance = Math.max(36, len(sub(point, poles.south)) ** 2);
+      const northDistance = Math.max(36, dot(sub(point, poles.north), sub(point, poles.north)));
+      const southDistance = Math.max(36, dot(sub(point, poles.south), sub(point, poles.south)));
       northInfluence += strength / northDistance;
       southInfluence += strength / southDistance;
     }
@@ -873,10 +889,10 @@
     const totalInfluence = northInfluence + southInfluence;
     if (totalInfluence <= 1e-6) return "rgba(147,197,253,0.5)";
     const blend = clamp((northInfluence - southInfluence) / totalInfluence, -1, 1);
-    const towardNorth = (blend + 1) * 0.5;
-    const red = Math.round(lerp(96, 248, towardNorth));
-    const green = Math.round(lerp(165, 113, towardNorth));
-    const blue = Math.round(lerp(250, 113, towardNorth));
+    const northDominanceRatio = (blend + 1) * 0.5;
+    const red = Math.round(lerp(96, 248, northDominanceRatio));
+    const green = Math.round(lerp(165, 113, northDominanceRatio));
+    const blue = Math.round(lerp(250, 113, northDominanceRatio));
     const alpha = lerp(0.42, 0.82, Math.abs(blend));
     return `rgba(${red},${green},${blue},${alpha.toFixed(3)})`;
   }
@@ -1496,7 +1512,7 @@
       state.selectedMaterialId = data.selectedMaterialId || state.materials[0]?.id || null;
       state.view.pan = v(0, 0);
       state.view.isPanning = false;
-      state.view.pointerId = null;
+      state.view.inputSource = null;
       accumulator = 0;
       running = false;
       getEl("startPauseBtn").textContent = "Start";
@@ -1710,15 +1726,15 @@
       event.preventDefault();
     });
     simCanvas.addEventListener("mousedown", (event) => {
-      if (event.button !== 2) return;
+      if (event.button !== RIGHT_MOUSE_BUTTON) return;
       event.preventDefault();
       state.view.isPanning = true;
-      state.view.pointerId = event.button;
+      state.view.inputSource = "mouse";
       state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
       simCanvas.classList.add("is-panning");
     });
     window.addEventListener("mousemove", (event) => {
-      if (!state.view.isPanning || state.view.pointerId !== 2) return;
+      if (!state.view.isPanning || state.view.inputSource !== "mouse") return;
       const rect = simCanvas.getBoundingClientRect();
       const scaleX = simCanvas.width / rect.width;
       const scaleY = simCanvas.height / rect.height;
@@ -1729,15 +1745,15 @@
       state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
     });
     window.addEventListener("mouseup", (event) => {
-      if (event.button !== 2) return;
+      if (event.button !== RIGHT_MOUSE_BUTTON) return;
       state.view.isPanning = false;
-      state.view.pointerId = null;
+      state.view.inputSource = null;
       simCanvas.classList.remove("is-panning");
     });
     window.addEventListener("blur", () => {
       if (!state.view.isPanning) return;
       state.view.isPanning = false;
-      state.view.pointerId = null;
+      state.view.inputSource = null;
       simCanvas.classList.remove("is-panning");
     });
 
