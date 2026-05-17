@@ -20,11 +20,17 @@
   const MAX_MAGNETIC_GRADIENT_EPSILON = 10;
   const MIN_FIELD_SCALE = 10;
   const MAX_FIELD_SCALE = 100000;
+  const MAX_FIELD_ARROW_LENGTH = 26;
+  const MIN_FIELD_ARROW_LENGTH = 3.5;
+  const FIELD_STRENGTH_RATIO_DIVISOR = 5;
+  const MIN_POLE_INFLUENCE_DISTANCE_SQUARED = 36;
   const POSITION_CORRECTION_PERCENT = 0.72;
   const POSITION_CORRECTION_SLOP = 0.01;
   const DEFAULT_RESTITUTION = 0.32;
   const DEFAULT_FRICTION = 0.42;
   const RIGHT_MOUSE_BUTTON = 2;
+  const SOUTH_POLE_COLOR = { r: 96, g: 165, b: 250 };
+  const NORTH_POLE_COLOR = { r: 248, g: 113, b: 113 };
 
   const MATERIAL_PRESETS = [
     {
@@ -876,8 +882,8 @@
       if (!magneticEnabled(body)) continue;
       const strength = Math.max(1, body.magnetic.strength * Math.max(0.05, body.magnetic.remanence));
       const poles = magneticPolePositions(body);
-      const northDistance = Math.max(36, dot(sub(point, poles.north), sub(point, poles.north)));
-      const southDistance = Math.max(36, dot(sub(point, poles.south), sub(point, poles.south)));
+      const northDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(sub(point, poles.north), sub(point, poles.north)));
+      const southDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(sub(point, poles.south), sub(point, poles.south)));
       northInfluence += strength / northDistance;
       southInfluence += strength / southDistance;
     }
@@ -890,9 +896,9 @@
     if (totalInfluence <= 1e-6) return "rgba(147,197,253,0.5)";
     const blend = clamp((northInfluence - southInfluence) / totalInfluence, -1, 1);
     const northDominanceRatio = (blend + 1) * 0.5;
-    const red = Math.round(lerp(96, 248, northDominanceRatio));
-    const green = Math.round(lerp(165, 113, northDominanceRatio));
-    const blue = Math.round(lerp(250, 113, northDominanceRatio));
+    const red = Math.round(lerp(SOUTH_POLE_COLOR.r, NORTH_POLE_COLOR.r, northDominanceRatio));
+    const green = Math.round(lerp(SOUTH_POLE_COLOR.g, NORTH_POLE_COLOR.g, northDominanceRatio));
+    const blue = Math.round(lerp(SOUTH_POLE_COLOR.b, NORTH_POLE_COLOR.b, northDominanceRatio));
     const alpha = lerp(0.42, 0.82, Math.abs(blend));
     return `rgba(${red},${green},${blue},${alpha.toFixed(3)})`;
   }
@@ -1239,7 +1245,6 @@
     const threshold = Math.max(0, Number(state.display.fieldThreshold) || 0);
     const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
     const offsetStart = -((subsamples - 1) * resolution) / 2;
-    const arrowMaxLength = 26;
 
     for (let y = arrowSpacing / 2; y < simCanvas.height; y += arrowSpacing) {
       for (let x = arrowSpacing / 2; x < simCanvas.width; x += arrowSpacing) {
@@ -1255,8 +1260,13 @@
         field = mul(field, 1 / count);
         const magnitude = len(field);
         if (magnitude < threshold) continue;
-        const strengthRatio = clamp((magnitude - threshold) / Math.max(threshold || 0.01, 0.01) / 5, 0.14, 1);
-        const arrowLength = clamp(magnitude * (scale / 1500), 3.5, arrowMaxLength) * lerp(0.7, 1, strengthRatio);
+        const strengthRatio = clamp(
+          (magnitude - threshold) / Math.max(threshold || 0.01, 0.01) / FIELD_STRENGTH_RATIO_DIVISOR,
+          0.14,
+          1
+        );
+        const arrowLength =
+          clamp(magnitude * (scale / 1500), MIN_FIELD_ARROW_LENGTH, MAX_FIELD_ARROW_LENGTH) * lerp(0.7, 1, strengthRatio);
         const worldPoint = screenToWorld(v(x, y));
         drawArrow(v(x, y), mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
       }
