@@ -2753,6 +2753,7 @@
     magneticStrength: 8,
     magneticRemanence: 0.12,
   });
+  // The startup scene intentionally begins unconstrained so motion stays free until the user adds joints explicitly.
   setSelectedBody(1);
 
   requestAnimationFrame(frame);
