@@ -130,6 +130,96 @@ h3 {
   min-width: 0;
 }
 
+.scene-stage {
+  position: relative;
+  min-height: 0;
+}
+
+.scene-overlay {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 5;
+  width: min(360px, calc(100% - 28px));
+  pointer-events: none;
+}
+
+.scene-tool-card {
+  pointer-events: auto;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 16px;
+  background: rgba(11, 18, 34, 0.88);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.42);
+}
+
+.scene-tool-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.scene-tool-hint {
+  margin: 4px 0 0;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.scene-tool-state {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 211, 238, 0.38);
+  background: rgba(14, 116, 144, 0.18);
+  color: #a5f3fc;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.scene-tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.scene-tool-grid label:first-child {
+  grid-column: 1 / -1;
+}
+
+.tool-chip,
+.segmented-btn,
+.section-toggle {
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.tool-chip.active,
+.segmented-btn.active {
+  border-color: #22d3ee;
+  color: #67e8f9;
+  background: rgba(8, 47, 73, 0.88);
+}
+
+.segmented-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.range-value {
+  font-size: 0.76rem;
+  color: #94a3b8;
+}
+
 .workspace-header {
   display: flex;
   flex-wrap: wrap;
@@ -153,6 +243,28 @@ h3 {
 
 .full-span {
   grid-column: 1 / -1;
+}
+
+.polyline-scene-note {
+  padding: 12px;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.6);
+  gap: 8px;
+}
+
+.polyline-scene-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.polyline-scene-note p,
+.polyline-scene-summary {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 label {
@@ -258,6 +370,22 @@ canvas {
   margin-bottom: 10px;
 }
 
+.section-toggle {
+  margin-left: auto;
+  padding: 6px 10px;
+  font-size: 0.74rem;
+  color: #cbd5e1;
+}
+
+.section-toggle:hover {
+  transform: translateY(-1px);
+}
+
+.section-content {
+  display: grid;
+  gap: 12px;
+}
+
 .table-list-wrap {
   overflow: auto;
   border: 1px solid #1e293b;
@@ -325,6 +453,14 @@ canvas {
 @media (max-width: 760px) {
   .grid {
     grid-template-columns: 1fr;
+  }
+
+   .scene-tool-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scene-overlay {
+    width: calc(100% - 28px);
   }
 
   .topbar {
