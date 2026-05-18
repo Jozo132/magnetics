@@ -77,16 +77,17 @@ h3 {
   min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
 }
 
 .sidebar {
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   border-right: 1px solid #334155;
   background: #0b1222;
+  overscroll-behavior: contain;
 }
 
 .sidebar-header,
@@ -113,8 +114,9 @@ h3 {
 }
 
 .sidebar-body {
-  overflow: auto;
+  overflow: visible;
   padding: 16px;
+  padding-bottom: 28px;
 }
 
 .workspace {
