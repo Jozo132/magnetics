@@ -513,13 +513,11 @@
 
   function setSelectedBody(bodyId) {
     state.selectedBodyId = bodyId == null ? null : Number(bodyId);
-    state.selectedConstraintId = null;
-    if (state.selectedBodyId != null) state.editorView = "shape";
+    clearSelectedConstraint();
     loadSelectedBodyIntoForm();
     refreshShapeTable();
-    refreshConstraintTable();
     refreshStatusSummary();
-    if (state.selectedBodyId != null) setEditorView("shape");
+    if (state.selectedBodyId != null) showEditorView("shape");
   }
 
   function loadSelectedBodyIntoForm() {
@@ -1692,6 +1690,12 @@
     getEl("interactionSummary").textContent = text;
   }
 
+  function clearSelectedConstraint() {
+    state.selectedConstraintId = null;
+    refreshConstraintTable();
+    refreshStatusSummary();
+  }
+
   function stopBodyInteraction() {
     state.interaction.mode = null;
     state.interaction.bodyId = null;
@@ -1875,13 +1879,11 @@
       const constraint = pickConstraint(point);
       if (constraint) {
         setSelectedConstraint(constraint.id);
-        setInteractionSummary(`Selected ${constraint.id}`);
+        setInteractionSummary(`Selected constraint: ${constraint.id}`);
         return;
       }
 
-      state.selectedConstraintId = null;
-      refreshConstraintTable();
-      refreshStatusSummary();
+      clearSelectedConstraint();
     });
     window.addEventListener("mousemove", (event) => {
       if (state.view.isPanning && state.view.inputSource === "mouse") {
