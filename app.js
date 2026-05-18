@@ -41,6 +41,7 @@
   const CONSTRAINT_PICK_DISTANCE = 12;
   const ROTATE_HANDLE_OFFSET = 34;
   const ROTATE_HANDLE_RADIUS = 9;
+  // Granule tuning values control how each rigid body is discretized for magnetic sampling and visualization.
   const MIN_GRANULES_PER_AXIS = 2;
   const MAX_GRANULES_PER_AXIS = 6;
   const GRANULE_AXIS_TARGET_DIVISOR = 3;
@@ -286,6 +287,7 @@
     return magneticEnabled(body) || hasFerromagneticResponse(body);
   }
 
+  // Creates centered sample positions along one local axis so the body can be split into evenly spaced magnetic granules.
   function buildGranuleAxisSamples(length, minimumCount = MIN_GRANULES_PER_AXIS) {
     const safeLength = Math.max(length, MIN_GRANULE_SPACING);
     const estimatedCount = Math.round(
@@ -305,6 +307,7 @@
     return Math.max(MIN_GRANULE_SAMPLE_RADIUS, Math.min(xAxis.spacing, yAxis.spacing) * GRANULE_SAMPLE_RADIUS_FACTOR);
   }
 
+  // Returns local-space granule descriptors { localPos, share, sampleRadius } for the body's current geometry.
   function buildBodyGranuleLayout(body) {
     if (!bodyUsesMagneticGranules(body)) return [];
 
@@ -1092,6 +1095,7 @@
     }
   }
 
+  // Sums field contributions from all effective granules while allowing callers to exclude a whole body or a single granule.
   function magneticFieldAtPointFromGranules(point, granules, options = {}) {
     const { excludeBodyId = null, excludeGranuleId = null } = options;
     let field = v(0, 0);
