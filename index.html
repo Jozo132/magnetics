@@ -101,12 +101,15 @@
                 </label>
                  <label>Magnetic Strength <input id="shapeMoment" type="number" value="40" step="1" /></label>
                  <label>Remanence <input id="shapeRemanence" type="number" value="1.2" step="0.05" min="0" /></label>
-                 <label id="shapePolylineWrap" class="full-span">Polyline Points
-                   <textarea id="shapePolyline" rows="5" placeholder="-60,-20&#10;0,-55&#10;65,-10&#10;25,50&#10;-45,30"></textarea>
-                 </label>
-               </div>
-               <div class="row wrap">
-                 <button id="addShapeBtn">Add Shape</button>
+                 <div id="shapePolylineWrap" class="full-span polyline-scene-note hidden">
+                    <span class="polyline-scene-title">Polyline Editing</span>
+                    <p>Edit the polyline directly in the scene using vertex handles, edge drags, and insert handles.</p>
+                    <div id="shapePolylineSummary" class="polyline-scene-summary">5 vertices ready for scene editing.</div>
+                    <textarea id="shapePolyline" class="hidden" rows="5" placeholder="-60,-20&#10;0,-55&#10;65,-10&#10;25,50&#10;-45,30"></textarea>
+                  </div>
+                </div>
+                <div class="row wrap">
+                  <button id="addShapeBtn">Add Shape</button>
                  <button id="updateShapeBtn">Update Selected</button>
                  <button id="deleteShapeBtn">Delete Selected</button>
                </div>
@@ -249,9 +252,43 @@
         <div class="workspace-header">
           <div id="selectionSummary" class="status-chip">No shapes selected</div>
           <div id="constraintSummary" class="status-chip">No constraints</div>
-          <div id="interactionSummary" class="status-chip">Left drag moves · rotate handle turns · right drag pans</div>
+          <div id="interactionSummary" class="status-chip">Drag shapes · resize edges or corners · edit polyline lines · right drag pans</div>
         </div>
-        <canvas id="simCanvas" width="980" height="620"></canvas>
+        <div class="scene-stage">
+          <div class="scene-overlay">
+            <section class="scene-tool-card">
+              <div class="scene-tool-header">
+                <div>
+                  <h3>Scene Tools</h3>
+                  <p id="sceneToolHint" class="scene-tool-hint">Select a shape to edit it with direct handles in the scene.</p>
+                </div>
+                <div id="sceneToolState" class="scene-tool-state">Select</div>
+              </div>
+              <div class="scene-tool-row">
+                <button id="sceneSelectToolBtn" type="button" class="tool-chip active">Select</button>
+                <button id="sceneBrushToolBtn" type="button" class="tool-chip">Pole Brush</button>
+              </div>
+              <div class="scene-tool-grid">
+                <label>Brush Type
+                  <div class="segmented-controls">
+                    <button id="sceneBrushNorthBtn" type="button" class="segmented-btn" data-scene-brush-mode="1">North</button>
+                    <button id="sceneBrushNeutralBtn" type="button" class="segmented-btn" data-scene-brush-mode="0">Neutral</button>
+                    <button id="sceneBrushSouthBtn" type="button" class="segmented-btn" data-scene-brush-mode="-1">South</button>
+                  </div>
+                </label>
+                <label>Brush Size
+                  <input id="sceneBrushSize" type="range" min="0" max="6" step="1" value="1" />
+                  <span id="sceneBrushSizeValue" class="range-value">1</span>
+                </label>
+                <label>Brush Strength
+                  <input id="sceneBrushStrength" type="range" min="0" max="120" step="1" value="40" />
+                  <span id="sceneBrushStrengthValue" class="range-value">40</span>
+                </label>
+              </div>
+            </section>
+          </div>
+          <canvas id="simCanvas" width="980" height="620"></canvas>
+        </div>
         <canvas id="plotCanvas" width="980" height="230"></canvas>
       </section>
     </main>

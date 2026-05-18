@@ -44,6 +44,12 @@
   const CONSTRAINT_PICK_DISTANCE = 12;
   const ROTATE_HANDLE_OFFSET = 34;
   const ROTATE_HANDLE_RADIUS = 9;
+  const RESIZE_HANDLE_RADIUS = 8;
+  const POLYLINE_VERTEX_HANDLE_RADIUS = 8;
+  const POLYLINE_INSERT_HANDLE_RADIUS = 7;
+  const POLYLINE_EDGE_PICK_DISTANCE = 12;
+  const MIN_BODY_AXIS_SIZE = 12;
+  const MIN_CIRCLE_RADIUS = 8;
   // Granule tuning values control how each rigid body is discretized for magnetic sampling and visualization.
   const MIN_GRANULES_PER_AXIS = 2;
   const DEFAULT_GRANULES_PER_AXIS = 4;
@@ -185,11 +191,19 @@
       inputSource: null,
       lastPointerClient: { x: 0, y: 0 },
     },
+    pointer: {
+      world: null,
+      insideCanvas: false,
+    },
     interaction: {
       mode: null,
       bodyId: null,
       pointerOffset: { x: 0, y: 0 },
       pointerAngleDelta: 0,
+      handle: null,
+      startSetup: null,
+      startLocalPoint: null,
+      startPoints: null,
     },
     poleBrush: {
       enabled: false,
@@ -262,6 +276,32 @@
     return screenToWorld(canvasPointFromMouseEvent(event));
   }
 
+  function localPointToWorld(body, localPoint) {
+    return add(body.pos, rotate(localPoint, body.angle));
+  }
+
+  function worldPointToLocal(body, worldPoint) {
+    return inverseRotate(sub(worldPoint, body.pos), body.angle);
+  }
+
+  function traceBodyPath(pathContext, body) {
+    if (body.type === "circle") {
+      pathContext.beginPath();
+      pathContext.arc(0, 0, body.radius, 0, Math.PI * 2);
+      return;
+    }
+    if (body.type === "polyline") {
+      const points = body.points?.length ? body.points : defaultPolylinePoints();
+      pathContext.beginPath();
+      pathContext.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i += 1) pathContext.lineTo(points[i].x, points[i].y);
+      pathContext.closePath();
+      return;
+    }
+    pathContext.beginPath();
+    pathContext.rect(-body.width * 0.5, -body.height * 0.5, body.width, body.height);
+  }
+
   function distancePointToSegment(point, a, b) {
     const segment = sub(b, a);
     const lengthSquared = dot(segment, segment);
@@ -302,6 +342,14 @@
 
   function formatPolylinePoints(points) {
     return (points?.length ? points : defaultPolylinePoints()).map((point) => `${point.x.toFixed(0)},${point.y.toFixed(0)}`).join("\n");
+  }
+
+  function setPolylineSummary(points) {
+    const count = Math.max(0, points?.length || 0);
+    getEl("shapePolylineSummary").textContent =
+      count > 0
+        ? `${count} vertex${count === 1 ? "" : "es"} in the scene editor. Drag points, drag edges, or use insert handles to refine the outline.`
+        : "Polyline scene editing is ready.";
   }
 
   function polygonBounds(points) {
@@ -434,7 +482,13 @@
       if (!localPoints.length) localPoints.push(v(0, 0));
       const sampleRadius = granuleSampleRadius(xAxis, yAxis);
       const share = 1 / localPoints.length;
-      return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
+      return localPoints.map((localPos) => ({
+        localPos,
+        share,
+        sampleRadius,
+        cellWidth: xAxis.spacing,
+        cellHeight: yAxis.spacing,
+      }));
     }
 
     if (body.type === "polyline") {
@@ -452,7 +506,13 @@
       if (!localPoints.length) localPoints.push(v(center.x, center.y));
       const sampleRadius = granuleSampleRadius(xAxis, yAxis);
       const share = 1 / localPoints.length;
-      return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
+      return localPoints.map((localPos) => ({
+        localPos,
+        share,
+        sampleRadius,
+        cellWidth: xAxis.spacing,
+        cellHeight: yAxis.spacing,
+      }));
     }
 
     const maxDimension = Math.max(body.width, body.height, 1);
@@ -465,7 +525,13 @@
     }
     const sampleRadius = granuleSampleRadius(xAxis, yAxis);
     const share = 1 / Math.max(1, localPoints.length);
-    return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
+    return localPoints.map((localPos) => ({
+      localPos,
+      share,
+      sampleRadius,
+      cellWidth: xAxis.spacing,
+      cellHeight: yAxis.spacing,
+    }));
   }
 
   function syncBodyDerived(body) {
@@ -772,6 +838,7 @@
     getEl("shapeMoment").value = body.magnetic.strength.toFixed(2);
     getEl("shapeRemanence").value = body.magnetic.remanence.toFixed(2);
     getEl("poleBrushStrength").value = body.magnetic.strength.toFixed(2);
+    setPolylineSummary(body.points);
     toggleShapeInputs();
   }
 
@@ -796,6 +863,7 @@
     getEl("shapeMoment").value = 40;
     getEl("shapeRemanence").value = materialById(getEl("shapeMaterial").value).remanenceDefault.toFixed(2);
     getEl("poleBrushStrength").value = 40;
+    setPolylineSummary(defaultPolylinePoints());
     toggleShapeInputs();
   }
 
@@ -804,6 +872,7 @@
     loadSelectedBodyIntoForm();
     refreshShapeTable();
     refreshStatusSummary();
+    syncDisplayInputs();
     if (state.selectedBodyId != null) showEditorView("shape");
   }
 
@@ -811,9 +880,11 @@
     const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
     if (!body) {
       clearShapeForm();
+      syncDisplayInputs();
       return;
     }
     populateShapeForm(body);
+    syncDisplayInputs();
   }
 
   function refreshSelect(select, items, valueFn, labelFn, includeEmptyLabel) {
@@ -1026,6 +1097,7 @@
     refreshShapeTable();
     refreshConstraintTable();
     refreshStatusSummary();
+    syncDisplayInputs();
   }
 
   function loadMaterialIntoForm(materialId) {
@@ -1230,7 +1302,9 @@
     let nextGranuleId = 1;
     for (const body of state.bodies) {
       if (!bodyUsesMagneticGranules(body)) continue;
-      const layout = body.granules?.length ? body.granules : [{ localPos: v(0, 0), share: 1, sampleRadius: DEFAULT_GRANULE_SAMPLE_RADIUS }];
+      const layout = body.granules?.length
+        ? body.granules
+        : [{ localPos: v(0, 0), share: 1, sampleRadius: DEFAULT_GRANULE_SAMPLE_RADIUS, cellWidth: DEFAULT_GRANULE_SAMPLE_RADIUS * 2, cellHeight: DEFAULT_GRANULE_SAMPLE_RADIUS * 2 }];
       const permanentMoment = magneticEnabled(body) ? configuredMagneticMoment(body) : v(0, 0);
       const balancedPaint = balancedPolePaint(body);
       layout.forEach((layoutGranule, layoutIndex) => {
@@ -1243,6 +1317,8 @@
           localPos: layoutGranule.localPos,
           share: layoutGranule.share,
           sampleRadius: layoutGranule.sampleRadius,
+          cellWidth: layoutGranule.cellWidth || layoutGranule.sampleRadius * 2,
+          cellHeight: layoutGranule.cellHeight || layoutGranule.sampleRadius * 2,
           polePaint: paintedPole,
           permanentMoment: permanentMomentForGranule(body, layoutGranule, permanentMoment, balancedPaint, layoutIndex),
           inducedMoment: v(0, 0),
@@ -1928,11 +2004,95 @@
     drawFieldLines(granules);
   }
 
+  function bodyResizeHandles(body) {
+    if (body.type === "circle") {
+      return [
+        { kind: "resize", axisX: "max", axisY: null, localPos: v(body.radius, 0) },
+        { kind: "resize", axisX: "min", axisY: null, localPos: v(-body.radius, 0) },
+        { kind: "resize", axisX: null, axisY: "min", localPos: v(0, -body.radius) },
+        { kind: "resize", axisX: null, axisY: "max", localPos: v(0, body.radius) },
+      ];
+    }
+    if (body.type === "polyline") return [];
+    const halfW = body.width * 0.5;
+    const halfH = body.height * 0.5;
+    return [
+      { kind: "resize", axisX: "min", axisY: "min", localPos: v(-halfW, -halfH) },
+      { kind: "resize", axisX: "max", axisY: "min", localPos: v(halfW, -halfH) },
+      { kind: "resize", axisX: "max", axisY: "max", localPos: v(halfW, halfH) },
+      { kind: "resize", axisX: "min", axisY: "max", localPos: v(-halfW, halfH) },
+      { kind: "resize", axisX: null, axisY: "min", localPos: v(0, -halfH) },
+      { kind: "resize", axisX: "max", axisY: null, localPos: v(halfW, 0) },
+      { kind: "resize", axisX: null, axisY: "max", localPos: v(0, halfH) },
+      { kind: "resize", axisX: "min", axisY: null, localPos: v(-halfW, 0) },
+    ];
+  }
+
+  function polylineInsertHandles(body) {
+    if (body.type !== "polyline") return [];
+    const points = body.points?.length ? body.points : defaultPolylinePoints();
+    return points.map((point, index) => {
+      const next = points[(index + 1) % points.length];
+      return {
+        kind: "insert-vertex",
+        edgeIndex: index,
+        localPos: v((point.x + next.x) * 0.5, (point.y + next.y) * 0.5),
+      };
+    });
+  }
+
+  function polylineVertexHandles(body) {
+    if (body.type !== "polyline") return [];
+    const points = body.points?.length ? body.points : defaultPolylinePoints();
+    return points.map((point, index) => ({
+      kind: "vertex",
+      vertexIndex: index,
+      localPos: point,
+    }));
+  }
+
+  function pickSelectedBodyHandle(point, body) {
+    const handleRadius = body.type === "polyline" ? POLYLINE_VERTEX_HANDLE_RADIUS + 3 : RESIZE_HANDLE_RADIUS + 4;
+    for (const handle of polylineVertexHandles(body)) {
+      if (len(sub(point, localPointToWorld(body, handle.localPos))) <= handleRadius) return handle;
+    }
+    for (const handle of polylineInsertHandles(body)) {
+      if (len(sub(point, localPointToWorld(body, handle.localPos))) <= POLYLINE_INSERT_HANDLE_RADIUS + 4) return handle;
+    }
+    for (const handle of bodyResizeHandles(body)) {
+      if (len(sub(point, localPointToWorld(body, handle.localPos))) <= RESIZE_HANDLE_RADIUS + 4) return handle;
+    }
+    return null;
+  }
+
+  function pickPolylineEdge(point, body) {
+    if (body.type !== "polyline") return null;
+    const points = body.points?.length ? body.points : defaultPolylinePoints();
+    let best = null;
+    let bestDistance = POLYLINE_EDGE_PICK_DISTANCE;
+    for (let index = 0; index < points.length; index += 1) {
+      const start = localPointToWorld(body, points[index]);
+      const end = localPointToWorld(body, points[(index + 1) % points.length]);
+      const distance = distancePointToSegment(point, start, end);
+      if (distance <= bestDistance) {
+        bestDistance = distance;
+        best = { edgeIndex: index };
+      }
+    }
+    return best;
+  }
+
   function drawBodyGranules(body, granules) {
     if (!granules?.length) return;
     const momentColor = magneticEnabled(body) ? GRANULE_PERMANENT_MOMENT_COLOR : GRANULE_INDUCED_MOMENT_COLOR;
+    ctx.save();
+    ctx.translate(body.pos.x, body.pos.y);
+    ctx.rotate(body.angle);
+    traceBodyPath(ctx, body);
+    ctx.clip();
     for (const granule of granules) {
-      const side = Math.max(4, granule.sampleRadius * 1.25 - GRANULE_PIXEL_PADDING * 2);
+      const cellWidth = Math.max(4, (granule.cellWidth || granule.sampleRadius * 2) - GRANULE_PIXEL_PADDING * 1.25);
+      const cellHeight = Math.max(4, (granule.cellHeight || granule.sampleRadius * 2) - GRANULE_PIXEL_PADDING * 1.25);
       const color =
         granule.polePaint > 0.001
           ? "rgba(248,113,113,0.95)"
@@ -1940,8 +2100,16 @@
             ? "rgba(96,165,250,0.95)"
             : NEUTRAL_GRANULE_COLOR;
       ctx.fillStyle = color;
-      ctx.fillRect(granule.pos.x - side * 0.5, granule.pos.y - side * 0.5, side, side);
-
+      if (body.type === "circle") {
+        ctx.beginPath();
+        ctx.ellipse(granule.localPos.x, granule.localPos.y, cellWidth * 0.45, cellHeight * 0.45, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillRect(granule.localPos.x - cellWidth * 0.5, granule.localPos.y - cellHeight * 0.5, cellWidth, cellHeight);
+      }
+    }
+    ctx.restore();
+    for (const granule of granules) {
       const momentMagnitude = len(granule.effectiveMoment);
       if (momentMagnitude > 1e-4 && Math.abs(granule.polePaint) <= 0.001) {
         const arrowLength = clamp(momentMagnitude * GRANULE_MOMENT_ARROW_SCALE, MIN_GRANULE_ARROW_LENGTH, MAX_GRANULE_ARROW_LENGTH);
@@ -1966,6 +2134,49 @@
     }
   }
 
+  function drawSelectedBodyEditHandles(body) {
+    if (body.type === "polyline") {
+      const points = body.points?.length ? body.points : defaultPolylinePoints();
+      ctx.save();
+      ctx.translate(body.pos.x, body.pos.y);
+      ctx.rotate(body.angle);
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = "rgba(250,204,21,0.92)";
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let index = 1; index < points.length; index += 1) ctx.lineTo(points[index].x, points[index].y);
+      ctx.closePath();
+      ctx.stroke();
+      for (const handle of polylineInsertHandles(body)) {
+        ctx.save();
+        ctx.translate(handle.localPos.x, handle.localPos.y);
+        ctx.rotate(Math.PI * 0.25);
+        ctx.fillStyle = "rgba(34,211,238,0.94)";
+        ctx.fillRect(-POLYLINE_INSERT_HANDLE_RADIUS, -POLYLINE_INSERT_HANDLE_RADIUS, POLYLINE_INSERT_HANDLE_RADIUS * 2, POLYLINE_INSERT_HANDLE_RADIUS * 2);
+        ctx.restore();
+      }
+      for (const handle of polylineVertexHandles(body)) {
+        ctx.fillStyle = "rgba(250,204,21,0.96)";
+        ctx.strokeStyle = "#0f172a";
+        ctx.beginPath();
+        ctx.arc(handle.localPos.x, handle.localPos.y, POLYLINE_VERTEX_HANDLE_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+      return;
+    }
+    for (const handle of bodyResizeHandles(body)) {
+      const world = localPointToWorld(body, handle.localPos);
+      ctx.fillStyle = "rgba(34,211,238,0.94)";
+      ctx.strokeStyle = "#0f172a";
+      ctx.beginPath();
+      ctx.arc(world.x, world.y, RESIZE_HANDLE_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
   function drawBody(body, granules) {
     const selected = body.id === state.selectedBodyId;
     const material = materialById(body.materialId);
@@ -1976,25 +2187,9 @@
     ctx.strokeStyle = selected ? "#facc15" : bodyHasMagneticBehavior(body) ? "#f97316" : "#38bdf8";
     ctx.fillStyle = bodyHasMagneticBehavior(body) ? "rgba(124,45,18,0.24)" : "rgba(30,41,59,0.7)";
 
-    if (body.type === "circle") {
-      ctx.beginPath();
-      ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    } else if (body.type === "polyline") {
-      const points = body.points?.length ? body.points : defaultPolylinePoints();
-      ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    } else {
-      ctx.beginPath();
-      ctx.rect(-body.width * 0.5, -body.height * 0.5, body.width, body.height);
-      ctx.fill();
-      ctx.stroke();
-    }
+    traceBodyPath(ctx, body);
+    ctx.fill();
+    ctx.stroke();
 
     ctx.fillStyle = "#e2e8f0";
     ctx.font = "12px Inter, sans-serif";
@@ -2045,7 +2240,129 @@
       ctx.fill();
       ctx.strokeStyle = "#0f172a";
       ctx.stroke();
+      drawSelectedBodyEditHandles(body);
     }
+  }
+
+  function drawBrushCursor() {
+    const pointer = state.pointer.world;
+    const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+    if (!state.poleBrush.enabled || !pointer || !body || !pointInBody(pointer, body)) return;
+    const localPointer = worldPointToLocal(body, pointer);
+    const screenPointer = worldToScreen(pointer);
+    let previewRadius = 18;
+    if (body.granules?.length) {
+      let closestGranule = body.granules[0];
+      let closestDistance = len(sub(localPointer, closestGranule.localPos));
+      for (const granule of body.granules) {
+        const distance = len(sub(localPointer, granule.localPos));
+        if (distance < closestDistance) {
+          closestGranule = granule;
+          closestDistance = distance;
+        }
+      }
+      previewRadius = closestGranule.sampleRadius * (0.85 + state.poleBrush.radius * 1.45);
+    }
+    ctx.save();
+    ctx.strokeStyle = state.poleBrush.mode > 0 ? "rgba(248,113,113,0.94)" : state.poleBrush.mode < 0 ? "rgba(96,165,250,0.94)" : "rgba(148,163,184,0.94)";
+    ctx.fillStyle = "rgba(15,23,42,0.16)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(screenPointer.x, screenPointer.y, previewRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function zeroBodyMotion(body) {
+    body.vel = v(0, 0);
+    body.force = v(0, 0);
+    body.angularVel = 0;
+    body.torque = 0;
+  }
+
+  function commitDirectBodyEdit(body) {
+    zeroBodyMotion(body);
+    syncBodyDerived(body);
+    body.setup = captureBodySetup(body);
+    invalidateMagneticAnalysis();
+    syncSelectedBodyInspector(false);
+    syncDisplayInputs();
+  }
+
+  function updateResizingBody(body, worldPoint) {
+    const start = state.interaction.startSetup;
+    const handle = state.interaction.handle;
+    if (!start || !handle) return;
+    const localPoint = inverseRotate(sub(worldPoint, start.pos), start.angle);
+    if (start.type === "circle") {
+      let minX = -start.radius;
+      let maxX = start.radius;
+      let minY = -start.radius;
+      let maxY = start.radius;
+      if (handle.axisX === "min") minX = Math.min(localPoint.x, maxX - MIN_CIRCLE_RADIUS * 2);
+      if (handle.axisX === "max") maxX = Math.max(localPoint.x, minX + MIN_CIRCLE_RADIUS * 2);
+      if (handle.axisY === "min") minY = Math.min(localPoint.y, maxY - MIN_CIRCLE_RADIUS * 2);
+      if (handle.axisY === "max") maxY = Math.max(localPoint.y, minY + MIN_CIRCLE_RADIUS * 2);
+      const radius = Math.max(MIN_CIRCLE_RADIUS, Math.max(maxX - minX, maxY - minY) * 0.5);
+      const centerOffset = v((minX + maxX) * 0.5, (minY + maxY) * 0.5);
+      body.pos = add(start.pos, rotate(centerOffset, start.angle));
+      body.radius = radius;
+      body.angle = start.angle;
+    } else {
+      let minX = -start.width * 0.5;
+      let maxX = start.width * 0.5;
+      let minY = -start.height * 0.5;
+      let maxY = start.height * 0.5;
+      if (handle.axisX === "min") minX = Math.min(localPoint.x, maxX - MIN_BODY_AXIS_SIZE);
+      if (handle.axisX === "max") maxX = Math.max(localPoint.x, minX + MIN_BODY_AXIS_SIZE);
+      if (handle.axisY === "min") minY = Math.min(localPoint.y, maxY - MIN_BODY_AXIS_SIZE);
+      if (handle.axisY === "max") maxY = Math.max(localPoint.y, minY + MIN_BODY_AXIS_SIZE);
+      body.width = Math.max(MIN_BODY_AXIS_SIZE, maxX - minX);
+      body.height = Math.max(MIN_BODY_AXIS_SIZE, maxY - minY);
+      const centerOffset = v((minX + maxX) * 0.5, (minY + maxY) * 0.5);
+      body.pos = add(start.pos, rotate(centerOffset, start.angle));
+      body.angle = start.angle;
+    }
+    commitDirectBodyEdit(body);
+  }
+
+  function updatePolylineVertex(body, worldPoint) {
+    const startPoints = state.interaction.startPoints;
+    const handle = state.interaction.handle;
+    if (!startPoints || !handle) return;
+    body.points = startPoints.map((point) => v(point.x, point.y));
+    body.points[handle.vertexIndex] = worldPointToLocal(body, worldPoint);
+    commitDirectBodyEdit(body);
+  }
+
+  function updatePolylineEdge(body, worldPoint) {
+    const startPoints = state.interaction.startPoints;
+    const handle = state.interaction.handle;
+    const startLocal = state.interaction.startLocalPoint;
+    if (!startPoints || !handle || !startLocal) return;
+    const localPoint = worldPointToLocal(body, worldPoint);
+    const localDelta = sub(localPoint, startLocal);
+    const nextIndex = (handle.edgeIndex + 1) % startPoints.length;
+    body.points = startPoints.map((point) => v(point.x, point.y));
+    body.points[handle.edgeIndex] = add(body.points[handle.edgeIndex], localDelta);
+    body.points[nextIndex] = add(body.points[nextIndex], localDelta);
+    commitDirectBodyEdit(body);
+  }
+
+  function insertPolylineVertex(body, edgeIndex, localPoint) {
+    const nextIndex = edgeIndex + 1;
+    body.points.splice(nextIndex, 0, v(localPoint.x, localPoint.y));
+    commitDirectBodyEdit(body);
+    return nextIndex;
+  }
+
+  function removePolylineVertex(body, vertexIndex) {
+    if (body.type !== "polyline" || (body.points?.length || 0) <= 3) return false;
+    body.points.splice(vertexIndex, 1);
+    commitDirectBodyEdit(body);
+    setInteractionSummary(`Removed vertex ${vertexIndex + 1} from shape #${body.id}`);
+    return true;
   }
 
   function render() {
@@ -2076,6 +2393,7 @@
 
     for (const body of state.bodies) drawBody(body, granulesByBody.get(body.id));
     ctx.restore();
+    drawBrushCursor();
   }
 
   function renderPlot() {
@@ -2313,6 +2631,26 @@
     getEl("poleBrushEnabled").checked = Boolean(state.poleBrush.enabled);
     getEl("poleBrushMode").value = String(state.poleBrush.mode);
     getEl("poleBrushRadius").value = String(state.poleBrush.radius);
+    const selectedBody = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+    const brushStrength = selectedBody ? selectedBody.magnetic.strength : Math.max(0, Number(getEl("poleBrushStrength").value) || 40);
+    getEl("sceneBrushSize").value = String(state.poleBrush.radius);
+    getEl("sceneBrushStrength").value = String(Math.round(brushStrength));
+    getEl("sceneBrushSizeValue").textContent = String(state.poleBrush.radius);
+    getEl("sceneBrushStrengthValue").textContent = String(Math.round(brushStrength));
+    getEl("sceneSelectToolBtn").classList.toggle("active", !state.poleBrush.enabled);
+    getEl("sceneBrushToolBtn").classList.toggle("active", state.poleBrush.enabled);
+    for (const button of document.querySelectorAll("[data-scene-brush-mode]")) {
+      button.classList.toggle("active", Number(button.dataset.sceneBrushMode) === state.poleBrush.mode);
+    }
+    const bodyType = selectedBody?.type || null;
+    getEl("sceneToolState").textContent = state.poleBrush.enabled ? "Pole Brush" : "Select";
+    getEl("sceneToolHint").textContent = selectedBody
+      ? bodyType === "polyline"
+        ? "Drag vertex handles, drag line segments, or use cyan insert handles to add new vertices."
+        : bodyType === "circle"
+          ? "Drag cyan edge handles to resize, drag the body to move, and use the gold handle to rotate."
+          : "Drag cyan edge or corner handles to resize, drag the body to move, and use the gold handle to rotate."
+      : "Select a shape to edit it with direct handles in the scene.";
   }
 
   function applyDisplayInputs() {
@@ -2333,6 +2671,7 @@
       body.setup = captureBodySetup(body);
       invalidateMagneticAnalysis();
     }
+    syncDisplayInputs();
   }
 
   function pointInBody(point, body) {
@@ -2417,10 +2756,52 @@
     getEl("shapeX").value = source.pos.x.toFixed(2);
     getEl("shapeY").value = source.pos.y.toFixed(2);
     getEl("shapeAngle").value = ((source.angle * 180) / Math.PI).toFixed(2);
+    getEl("shapePolyline").value = formatPolylinePoints(source.points);
+    setPolylineSummary(source.points);
+  }
+
+  function setSectionCollapsed(section, collapsed) {
+    const content = section.querySelector(".section-content");
+    const toggle = section.querySelector(".section-toggle");
+    if (!content || !toggle) return;
+    content.classList.toggle("hidden", collapsed);
+    toggle.textContent = collapsed ? "Expand" : "Minimize";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
+
+  function enableCollapsibleSections() {
+    for (const section of document.querySelectorAll(".panel-section")) {
+      if (section.dataset.collapsibleReady === "true") continue;
+      const heading = section.querySelector(":scope > .section-heading") || section.querySelector(":scope > h3");
+      if (!heading) continue;
+      let header = heading;
+      if (heading.tagName === "H3") {
+        header = document.createElement("div");
+        header.className = "section-heading";
+        section.insertBefore(header, heading);
+        header.appendChild(heading);
+      }
+      const content = document.createElement("div");
+      content.className = "section-content";
+      while (header.nextSibling) content.appendChild(header.nextSibling);
+      section.appendChild(content);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "section-toggle";
+      toggle.addEventListener("click", () => setSectionCollapsed(section, !content.classList.contains("hidden")));
+      header.appendChild(toggle);
+      setSectionCollapsed(section, false);
+      section.dataset.collapsibleReady = "true";
+    }
   }
 
   function setInteractionSummary(text) {
     getEl("interactionSummary").textContent = text;
+  }
+
+  function setPoleBrushEnabled(enabled) {
+    getEl("poleBrushEnabled").checked = Boolean(enabled);
+    applyDisplayInputs();
   }
 
   function stopBodyInteraction() {
@@ -2428,7 +2809,11 @@
     state.interaction.bodyId = null;
     state.interaction.pointerOffset = { x: 0, y: 0 };
     state.interaction.pointerAngleDelta = 0;
-    setInteractionSummary("Left drag moves · rotate handle turns · right drag pans");
+    state.interaction.handle = null;
+    state.interaction.startSetup = null;
+    state.interaction.startLocalPoint = null;
+    state.interaction.startPoints = null;
+    setInteractionSummary("Drag shapes · resize edges or corners · edit polyline lines · right drag pans");
   }
 
   function toggleShapeInputs() {
@@ -2588,10 +2973,43 @@
     getEl("exportBtn").addEventListener("click", exportProject);
     getEl("importBtn").addEventListener("click", importProject);
 
+    getEl("sceneSelectToolBtn").addEventListener("click", () => setPoleBrushEnabled(false));
+    getEl("sceneBrushToolBtn").addEventListener("click", () => setPoleBrushEnabled(true));
+    for (const button of document.querySelectorAll("[data-scene-brush-mode]")) {
+      button.addEventListener("click", () => {
+        getEl("poleBrushMode").value = button.dataset.sceneBrushMode;
+        applyDisplayInputs();
+      });
+    }
+    getEl("sceneBrushSize").addEventListener("input", () => {
+      getEl("poleBrushRadius").value = getEl("sceneBrushSize").value;
+      applyDisplayInputs();
+    });
+    getEl("sceneBrushStrength").addEventListener("input", () => {
+      getEl("poleBrushStrength").value = getEl("sceneBrushStrength").value;
+      applyDisplayInputs();
+    });
+
     simCanvas.addEventListener("contextmenu", (event) => {
       event.preventDefault();
     });
+    simCanvas.addEventListener("mouseenter", () => {
+      state.pointer.insideCanvas = true;
+    });
+    simCanvas.addEventListener("mouseleave", () => {
+      state.pointer.insideCanvas = false;
+      state.pointer.world = null;
+    });
+    simCanvas.addEventListener("dblclick", (event) => {
+      if (event.button !== LEFT_MOUSE_BUTTON) return;
+      const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+      if (!body || body.type !== "polyline") return;
+      const point = worldPointFromMouseEvent(event);
+      const handle = pickSelectedBodyHandle(point, body);
+      if (handle?.kind === "vertex") removePolylineVertex(body, handle.vertexIndex);
+    });
     simCanvas.addEventListener("mousedown", (event) => {
+      state.pointer.world = worldPointFromMouseEvent(event);
       if (event.button === RIGHT_MOUSE_BUTTON) {
         event.preventDefault();
         state.view.isPanning = true;
@@ -2603,7 +3021,7 @@
       }
 
       if (event.button !== LEFT_MOUSE_BUTTON) return;
-      const point = worldPointFromMouseEvent(event);
+      const point = state.pointer.world;
       const selectedBody = state.bodies.find((body) => body.id === state.selectedBodyId);
       if (state.poleBrush.enabled && selectedBody && pointInBody(point, selectedBody)) {
         state.interaction.mode = "paint";
@@ -2616,8 +3034,47 @@
         state.interaction.mode = "rotate";
         state.interaction.bodyId = selectedBody.id;
         state.interaction.pointerAngleDelta = Math.atan2(point.y - selectedBody.pos.y, point.x - selectedBody.pos.x) - selectedBody.angle;
+        state.interaction.startSetup = captureBodySetup(selectedBody);
         setInteractionSummary(`Rotating shape #${selectedBody.id}`);
         return;
+      }
+      if (selectedBody) {
+        const handle = pickSelectedBodyHandle(point, selectedBody);
+        if (handle?.kind === "resize") {
+          state.interaction.mode = "resize";
+          state.interaction.bodyId = selectedBody.id;
+          state.interaction.handle = handle;
+          state.interaction.startSetup = captureBodySetup(selectedBody);
+          setInteractionSummary(`Resizing shape #${selectedBody.id}`);
+          return;
+        }
+        if (handle?.kind === "vertex") {
+          state.interaction.mode = "vertex";
+          state.interaction.bodyId = selectedBody.id;
+          state.interaction.handle = handle;
+          state.interaction.startPoints = selectedBody.points.map((entry) => v(entry.x, entry.y));
+          setInteractionSummary(`Dragging vertex ${handle.vertexIndex + 1} on shape #${selectedBody.id}`);
+          return;
+        }
+        if (handle?.kind === "insert-vertex") {
+          const insertedIndex = insertPolylineVertex(selectedBody, handle.edgeIndex, handle.localPos);
+          state.interaction.mode = "vertex";
+          state.interaction.bodyId = selectedBody.id;
+          state.interaction.handle = { kind: "vertex", vertexIndex: insertedIndex };
+          state.interaction.startPoints = selectedBody.points.map((entry) => v(entry.x, entry.y));
+          setInteractionSummary(`Inserted a new vertex on shape #${selectedBody.id}`);
+          return;
+        }
+        const polylineEdge = pickPolylineEdge(point, selectedBody);
+        if (polylineEdge) {
+          state.interaction.mode = "edge";
+          state.interaction.bodyId = selectedBody.id;
+          state.interaction.handle = polylineEdge;
+          state.interaction.startPoints = selectedBody.points.map((entry) => v(entry.x, entry.y));
+          state.interaction.startLocalPoint = worldPointToLocal(selectedBody, point);
+          setInteractionSummary(`Dragging edge ${polylineEdge.edgeIndex + 1} on shape #${selectedBody.id}`);
+          return;
+        }
       }
 
       const body = pickBody(point);
@@ -2626,6 +3083,7 @@
         state.interaction.mode = "drag";
         state.interaction.bodyId = body.id;
         state.interaction.pointerOffset = sub(body.pos, point);
+        state.interaction.startSetup = captureBodySetup(body);
         setInteractionSummary(`Dragging shape #${body.id}`);
         return;
       }
@@ -2640,10 +3098,17 @@
       clearSelectedConstraint();
     });
     window.addEventListener("mousemove", (event) => {
+      const canvasRect = simCanvas.getBoundingClientRect();
+      const insideCanvas =
+        event.clientX >= canvasRect.left &&
+        event.clientX <= canvasRect.right &&
+        event.clientY >= canvasRect.top &&
+        event.clientY <= canvasRect.bottom;
+      state.pointer.insideCanvas = insideCanvas;
+      state.pointer.world = insideCanvas || state.interaction.mode || state.view.isPanning ? worldPointFromMouseEvent(event) : null;
       if (state.view.isPanning && state.view.inputSource === "mouse") {
-        const rect = simCanvas.getBoundingClientRect();
-        const scaleX = simCanvas.width / rect.width;
-        const scaleY = simCanvas.height / rect.height;
+        const scaleX = simCanvas.width / canvasRect.width;
+        const scaleY = simCanvas.height / canvasRect.height;
         state.view.pan = add(
           state.view.pan,
           v((event.clientX - state.view.lastPointerClient.x) * scaleX, (event.clientY - state.view.lastPointerClient.y) * scaleY)
@@ -2655,30 +3120,36 @@
       if (!state.interaction.mode) return;
       const body = state.bodies.find((entry) => entry.id === state.interaction.bodyId);
       if (!body) return;
-      const point = worldPointFromMouseEvent(event);
+      const point = state.pointer.world;
       if (state.interaction.mode === "drag") {
         body.pos = add(point, state.interaction.pointerOffset);
-        body.vel = v(0, 0);
-        body.force = v(0, 0);
-        body.angularVel = 0;
-        body.torque = 0;
+        zeroBodyMotion(body);
+        body.setup = captureBodySetup(body);
+        invalidateMagneticAnalysis();
       } else if (state.interaction.mode === "paint") {
         paintBodyGranules(body, point);
       } else if (state.interaction.mode === "rotate") {
         body.angle = Math.atan2(point.y - body.pos.y, point.x - body.pos.x) - state.interaction.pointerAngleDelta;
-        body.angularVel = 0;
-        body.torque = 0;
+        zeroBodyMotion(body);
+        body.setup = captureBodySetup(body);
+        invalidateMagneticAnalysis();
+      } else if (state.interaction.mode === "resize") {
+        updateResizingBody(body, point);
+      } else if (state.interaction.mode === "vertex") {
+        updatePolylineVertex(body, point);
+      } else if (state.interaction.mode === "edge") {
+        updatePolylineEdge(body, point);
       }
-      if (state.interaction.mode !== "paint") body.setup = captureBodySetup(body);
-      invalidateMagneticAnalysis();
-      syncSelectedBodyInspector(false);
+      if (state.interaction.mode === "drag" || state.interaction.mode === "rotate") {
+        syncSelectedBodyInspector(false);
+      }
     });
     window.addEventListener("mouseup", (event) => {
       if (event.button === RIGHT_MOUSE_BUTTON) {
         state.view.isPanning = false;
         state.view.inputSource = null;
         simCanvas.classList.remove("is-panning");
-        if (!state.interaction.mode) setInteractionSummary("Left drag moves · rotate handle turns · right drag pans");
+        if (!state.interaction.mode) setInteractionSummary("Drag shapes · resize edges or corners · edit polyline lines · right drag pans");
       }
       if (event.button === LEFT_MOUSE_BUTTON && state.interaction.mode) {
         syncSelectedBodyInspector();
@@ -2689,10 +3160,13 @@
       state.view.isPanning = false;
       state.view.inputSource = null;
       simCanvas.classList.remove("is-panning");
+      state.pointer.world = null;
+      state.pointer.insideCanvas = false;
       stopBodyInteraction();
     });
   }
 
+  enableCollapsibleSections();
   wireUi();
   refreshUiLists();
   clearShapeForm();
