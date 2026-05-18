@@ -41,6 +41,15 @@
   const CONSTRAINT_PICK_DISTANCE = 12;
   const ROTATE_HANDLE_OFFSET = 34;
   const ROTATE_HANDLE_RADIUS = 9;
+  const MIN_GRANULES_PER_AXIS = 2;
+  const MAX_GRANULES_PER_AXIS = 6;
+  const MIN_GRANULE_SPACING = 14;
+  const MAX_GRANULE_SPACING = 34;
+  const GRANULE_POINT_RADIUS = 3.2;
+  const MIN_GRANULE_ARROW_LENGTH = 4;
+  const MAX_GRANULE_ARROW_LENGTH = 12;
+  const GRANULE_FORCE_ARROW_SCALE = 0.014;
+  const MAX_GRANULE_FORCE_ARROW_LENGTH = 12;
 
   const MATERIAL_PRESETS = [
     {
@@ -155,6 +164,7 @@
       pointerOffset: { x: 0, y: 0 },
       pointerAngleDelta: 0,
     },
+    magneticGranules: [],
   };
 
   const v = (x = 0, y = 0) => ({ x, y });
@@ -240,6 +250,55 @@
     return material.permeability > 1.05 || Math.abs(material.susceptibility) > 0.02;
   }
 
+  function bodyUsesMagneticGranules(body) {
+    return magneticEnabled(body) || hasFerromagneticResponse(body);
+  }
+
+  function buildGranuleAxisSamples(length, minimumCount = MIN_GRANULES_PER_AXIS) {
+    const safeLength = Math.max(length, MIN_GRANULE_SPACING);
+    const estimatedCount = Math.round(safeLength / clamp(safeLength / 3, MIN_GRANULE_SPACING, MAX_GRANULE_SPACING));
+    const count = clamp(estimatedCount, minimumCount, MAX_GRANULES_PER_AXIS);
+    const spacing = safeLength / count;
+    const start = -safeLength * 0.5 + spacing * 0.5;
+    return {
+      count,
+      spacing,
+      samples: Array.from({ length: count }, (_, index) => start + index * spacing),
+    };
+  }
+
+  function buildBodyGranuleLayout(body) {
+    if (!bodyUsesMagneticGranules(body)) return [];
+
+    const localPoints = [];
+    if (body.type === "circle") {
+      const diameter = body.radius * 2;
+      const xAxis = buildGranuleAxisSamples(diameter);
+      const yAxis = buildGranuleAxisSamples(diameter);
+      const clipRadius = Math.max(body.radius * 0.88, body.radius - Math.min(xAxis.spacing, yAxis.spacing) * 0.35);
+      for (const y of yAxis.samples) {
+        for (const x of xAxis.samples) {
+          if (Math.hypot(x, y) <= clipRadius) localPoints.push(v(x, y));
+        }
+      }
+      if (!localPoints.length) localPoints.push(v(0, 0));
+      const sampleRadius = Math.max(8, Math.min(xAxis.spacing, yAxis.spacing) * 0.68);
+      const share = 1 / localPoints.length;
+      return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
+    }
+
+    const xAxis = buildGranuleAxisSamples(body.width);
+    const yAxis = buildGranuleAxisSamples(body.height);
+    for (const y of yAxis.samples) {
+      for (const x of xAxis.samples) {
+        localPoints.push(v(x, y));
+      }
+    }
+    const sampleRadius = Math.max(8, Math.min(xAxis.spacing, yAxis.spacing) * 0.68);
+    const share = 1 / Math.max(1, localPoints.length);
+    return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
+  }
+
   function syncBodyDerived(body) {
     const material = materialById(body.materialId);
     body.materialId = material.id;
@@ -270,6 +329,7 @@
     body.magnetic.strength = Math.max(0, Number(body.magnetic.strength) || 0);
     body.magnetic.polarity = Number(body.magnetic.polarity) === -1 ? -1 : 1;
     body.magnetic.remanence = Math.max(0, Number(body.magnetic.remanence) || material.remanenceDefault || 0);
+    body.granules = buildBodyGranuleLayout(body);
 
     if (!body.setup) body.setup = captureBodySetup(body);
   }
@@ -666,7 +726,9 @@
       const material = materialById(body.materialId);
       const magneticLabel = magneticEnabled(body)
         ? `${body.magnetic.model === "inducedDipole" ? "Induced" : "Permanent"} · ${body.magnetic.polarity === -1 ? "S→N" : "N→S"}`
-        : "No";
+        : bodyUsesMagneticGranules(body)
+          ? "Ferromagnetic granules"
+          : "No";
       row.dataset.bodyId = String(body.id);
       appendTableCell(row, `#${body.id}${body.fixed ? " 📌" : ""}`);
       appendTableCell(row, body.type);
@@ -831,6 +893,7 @@
     state.tracking = { bodyId: null, metric: "force", samples: [] };
     state.selectedBodyId = null;
     state.selectedConstraintId = null;
+    state.magneticGranules = [];
     state.view.pan = v(0, 0);
     state.view.isPanning = false;
     state.view.inputSource = null;
@@ -889,14 +952,15 @@
     return dipoleFieldFromMomentAtPoint(body.pos, configuredMagneticMoment(body), point);
   }
 
-  function inducedMagneticMoment(body, field) {
+  function inducedMagneticMoment(body, field, geometryShare = 1) {
     if (!hasFerromagneticResponse(body)) return v(0, 0);
     const fieldMagnitude = len(field);
     if (fieldMagnitude < 1e-6) return v(0, 0);
     const material = materialById(body.materialId);
     const susceptibility = Math.max(0, material.susceptibility);
     if (susceptibility === 0) return v(0, 0);
-    const geometryScale = body.type === "circle" ? Math.PI * body.radius * body.radius : body.width * body.height;
+    const geometryScale =
+      (body.type === "circle" ? Math.PI * body.radius * body.radius : body.width * body.height) * Math.max(0, geometryShare);
     const magnitude =
       fieldMagnitude *
       susceptibility *
@@ -906,34 +970,110 @@
     return mul(unit(field), magnitude);
   }
 
-  function magneticFieldAtPoint(point) {
-    let field = v(0, 0);
+  function buildMagneticGranuleAnalysis() {
+    const granules = [];
+    let nextGranuleId = 1;
     for (const body of state.bodies) {
-      if (!magneticEnabled(body)) continue;
-      field = add(field, dipoleFieldFromBodyAtPoint(body, point));
+      if (!bodyUsesMagneticGranules(body)) continue;
+      const layout = body.granules?.length ? body.granules : [{ localPos: v(0, 0), share: 1, sampleRadius: 10 }];
+      const permanentMoment = magneticEnabled(body) ? configuredMagneticMoment(body) : v(0, 0);
+      for (const layoutGranule of layout) {
+        granules.push({
+          id: nextGranuleId++,
+          body,
+          bodyId: body.id,
+          pos: add(body.pos, rotate(layoutGranule.localPos, body.angle)),
+          localPos: layoutGranule.localPos,
+          share: layoutGranule.share,
+          sampleRadius: layoutGranule.sampleRadius,
+          permanentMoment: mul(permanentMoment, layoutGranule.share),
+          inducedMoment: v(0, 0),
+          effectiveMoment: mul(permanentMoment, layoutGranule.share),
+          externalField: v(0, 0),
+          force: v(0, 0),
+        });
+      }
+    }
+
+    const bodyAccumulators = new Map(
+      state.bodies.map((body) => [
+        body.id,
+        {
+          force: v(0, 0),
+          torque: 0,
+        },
+      ])
+    );
+    const granuleCounts = new Map();
+    for (const granule of granules) {
+      granuleCounts.set(granule.bodyId, (granuleCounts.get(granule.bodyId) || 0) + 1);
+    }
+
+    applyInducedGranuleMoments(granules);
+    applyInducedGranuleMoments(granules);
+
+    for (const granule of granules) {
+      const field = magneticFieldAtPointFromGranules(granule.pos, granules, { excludeBodyId: granule.bodyId });
+      granule.externalField = field;
+      if (len(granule.effectiveMoment) < 1e-6 && len(field) < 1e-6) continue;
+
+      const epsilon = clamp(granule.sampleRadius * 0.35, MIN_MAGNETIC_GRADIENT_EPSILON, MAX_MAGNETIC_GRADIENT_EPSILON);
+      const energyDensityAt = (point) => dot(granule.effectiveMoment, magneticFieldAtPointFromGranules(point, granules, { excludeBodyId: granule.bodyId }));
+      const gradX = (energyDensityAt(add(granule.pos, v(epsilon, 0))) - energyDensityAt(add(granule.pos, v(-epsilon, 0)))) / (2 * epsilon);
+      const gradY = (energyDensityAt(add(granule.pos, v(0, epsilon))) - energyDensityAt(add(granule.pos, v(0, -epsilon)))) / (2 * epsilon);
+      let force = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
+      const maxGranuleForce = MAX_MAGNETIC_FORCE / Math.max(1, granuleCounts.get(granule.bodyId) || 1);
+      if (len(force) > maxGranuleForce) force = mul(unit(force), maxGranuleForce);
+      granule.force = force;
+
+      const accumulator = bodyAccumulators.get(granule.bodyId);
+      accumulator.force = add(accumulator.force, force);
+      accumulator.torque += cross(sub(granule.pos, granule.body.pos), force);
+      accumulator.torque += cross(granule.effectiveMoment, field) * MAGNETIC_TORQUE_SCALE;
+    }
+
+    return { granules, bodyAccumulators };
+  }
+
+  function applyInducedGranuleMoments(granules) {
+    for (const granule of granules) {
+      const field = magneticFieldAtPointFromGranules(granule.pos, granules, { excludeBodyId: granule.bodyId });
+      const inducedMoment = inducedMagneticMoment(granule.body, field, granule.share);
+      granule.externalField = field;
+      granule.inducedMoment = inducedMoment;
+      granule.effectiveMoment = add(granule.permanentMoment, inducedMoment);
+    }
+  }
+
+  function magneticFieldAtPointFromGranules(point, granules, options = {}) {
+    const { excludeBodyId = null, excludeGranuleId = null } = options;
+    let field = v(0, 0);
+    for (const granule of granules) {
+      if (excludeGranuleId != null && granule.id === excludeGranuleId) continue;
+      if (excludeBodyId != null && granule.bodyId === excludeBodyId) continue;
+      if (len(granule.effectiveMoment) < 1e-8) continue;
+      field = add(field, dipoleFieldFromMomentAtPoint(granule.pos, granule.effectiveMoment, point));
     }
     return field;
   }
 
-  function magneticPolePositions(body) {
-    const axis = magneticAxis(body);
-    const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.5;
-    const northSign = body.magnetic.polarity === -1 ? -1 : 1;
-    return {
-      north: add(body.pos, mul(axis, extent * northSign)),
-      south: add(body.pos, mul(axis, -extent * northSign)),
-    };
+  function magneticFieldAtPoint(point, granules = state.magneticGranules) {
+    return magneticFieldAtPointFromGranules(point, granules || []);
   }
 
-  function magneticPoleBiasAtPoint(point) {
+  function magneticPoleBiasAtPoint(point, granules = state.magneticGranules) {
     let northInfluence = 0;
     let southInfluence = 0;
-    for (const body of state.bodies) {
-      if (!magneticEnabled(body)) continue;
-      const strength = Math.max(1, body.magnetic.strength * Math.max(0.05, body.magnetic.remanence));
-      const poles = magneticPolePositions(body);
-      const northDelta = sub(point, poles.north);
-      const southDelta = sub(point, poles.south);
+    for (const granule of granules || []) {
+      const moment = granule.effectiveMoment;
+      if (len(moment) < 1e-6) continue;
+      const axis = unit(moment);
+      const extent = Math.max(4, granule.sampleRadius * 0.55);
+      const north = add(granule.pos, mul(axis, extent));
+      const south = add(granule.pos, mul(axis, -extent));
+      const strength = Math.max(0.2, len(moment));
+      const northDelta = sub(point, north);
+      const southDelta = sub(point, south);
       const northDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(northDelta, northDelta));
       const southDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(southDelta, southDelta));
       northInfluence += strength / northDistance;
@@ -942,8 +1082,8 @@
     return { northInfluence, southInfluence };
   }
 
-  function fieldArrowColorAtPoint(point) {
-    const { northInfluence, southInfluence } = magneticPoleBiasAtPoint(point);
+  function fieldArrowColorAtPoint(point, granules = state.magneticGranules) {
+    const { northInfluence, southInfluence } = magneticPoleBiasAtPoint(point, granules);
     const totalInfluence = northInfluence + southInfluence;
     if (totalInfluence <= 1e-6) return DEFAULT_FIELD_ARROW_COLOR;
     const blend = clamp((northInfluence - southInfluence) / totalInfluence, -1, 1);
@@ -956,54 +1096,15 @@
   }
 
   function applyMagnetics() {
-    for (let i = 0; i < state.bodies.length; i += 1) {
-      for (let j = i + 1; j < state.bodies.length; j += 1) {
-        const a = state.bodies[i];
-        const b = state.bodies[j];
-        const baseMomentA = configuredMagneticMoment(a);
-        const baseMomentB = configuredMagneticMoment(b);
-        const hasBaseA = len(baseMomentA) >= MIN_EFFECTIVE_MAGNETIC_MOMENT;
-        const hasBaseB = len(baseMomentB) >= MIN_EFFECTIVE_MAGNETIC_MOMENT;
-        if (!hasBaseA && !hasBaseB) continue;
-
-        const source = !hasBaseA && hasBaseB ? b : a;
-        const target = source === a ? b : a;
-        const sourceMoment = source === a ? baseMomentA : baseMomentB;
-        const targetBaseMoment = source === a ? baseMomentB : baseMomentA;
-
-        const delta = sub(target.pos, source.pos);
-        const distance = Math.max(MIN_MAGNETIC_DISTANCE, len(delta));
-        const epsilon = clamp(
-          distance * MAGNETIC_GRADIENT_EPSILON_SCALE,
-          MIN_MAGNETIC_GRADIENT_EPSILON,
-          MAX_MAGNETIC_GRADIENT_EPSILON
-        );
-        const fieldAtTarget = dipoleFieldFromMomentAtPoint(source.pos, sourceMoment, target.pos);
-        const targetMoment = add(targetBaseMoment, inducedMagneticMoment(target, fieldAtTarget));
-        if (len(targetMoment) < MIN_EFFECTIVE_MAGNETIC_MOMENT) continue;
-
-        const energyDensityAt = (point, targetMoment) => dot(targetMoment, dipoleFieldFromMomentAtPoint(source.pos, sourceMoment, point));
-        const gradX =
-          (energyDensityAt(add(target.pos, v(epsilon, 0)), targetMoment) - energyDensityAt(add(target.pos, v(-epsilon, 0)), targetMoment)) /
-          (2 * epsilon);
-        const gradY =
-          (energyDensityAt(add(target.pos, v(0, epsilon)), targetMoment) - energyDensityAt(add(target.pos, v(0, -epsilon)), targetMoment)) /
-          (2 * epsilon);
-        let forceOnTarget = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
-        const forceMagnitude = len(forceOnTarget);
-        if (forceMagnitude > MAX_MAGNETIC_FORCE) {
-          forceOnTarget = mul(unit(forceOnTarget), MAX_MAGNETIC_FORCE);
-        }
-
-        source.force = sub(source.force, forceOnTarget);
-        target.force = add(target.force, forceOnTarget);
-
-        target.torque += cross(targetMoment, fieldAtTarget) * MAGNETIC_TORQUE_SCALE;
-        if (len(targetBaseMoment) >= MIN_EFFECTIVE_MAGNETIC_MOMENT) {
-          const fieldAtSource = dipoleFieldFromMomentAtPoint(target.pos, targetBaseMoment, source.pos);
-          source.torque += cross(sourceMoment, fieldAtSource) * MAGNETIC_TORQUE_SCALE;
-        }
-      }
+    const magneticAnalysis = buildMagneticGranuleAnalysis();
+    state.magneticGranules = magneticAnalysis.granules;
+    for (const body of state.bodies) {
+      const accumulator = magneticAnalysis.bodyAccumulators.get(body.id);
+      if (!accumulator) continue;
+      let magneticForce = accumulator.force;
+      if (len(magneticForce) > MAX_MAGNETIC_FORCE) magneticForce = mul(unit(magneticForce), MAX_MAGNETIC_FORCE);
+      body.force = add(body.force, magneticForce);
+      body.torque += accumulator.torque;
     }
   }
 
@@ -1305,7 +1406,7 @@
     ctx.fill();
   }
 
-  function drawField() {
+  function drawField(granules) {
     const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 22, 8, 200);
     const resolution = clamp(Number(state.display.fieldSampleResolution) || 6, 2, arrowSpacing);
     const scale = clamp(Number(state.display.fieldScale) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
@@ -1327,7 +1428,7 @@
         for (let sy = 0; sy < subsamples; sy += 1) {
           for (let sx = 0; sx < subsamples; sx += 1) {
             const sample = add(worldPoint, v(offsetStart + sx * resolution, offsetStart + sy * resolution));
-            field = add(field, magneticFieldAtPoint(sample));
+            field = add(field, magneticFieldAtPoint(sample, granules));
             count += 1;
           }
         }
@@ -1342,12 +1443,45 @@
             clamp((magnitude - threshold) / Math.max(FIELD_STRENGTH_RATIO_DIVISOR, 1), MIN_ARROW_STRENGTH_SCALE, 1)
           );
         const strengthRatio = clamp(arrowLength / MAX_FIELD_ARROW_LENGTH, MIN_ARROW_STRENGTH_SCALE, 1);
-        drawArrow(screenPoint, mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
+        drawArrow(screenPoint, mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint, granules), strengthRatio);
       }
     }
   }
 
-  function drawBody(body) {
+  function drawBodyGranules(body, granules) {
+    if (!granules?.length) return;
+    const momentColor = magneticEnabled(body) ? "rgba(251,146,60,0.9)" : "rgba(226,232,240,0.82)";
+    const pointColor = magneticEnabled(body) ? "rgba(253,186,116,0.95)" : "rgba(191,219,254,0.9)";
+    for (const granule of granules) {
+      ctx.fillStyle = pointColor;
+      ctx.beginPath();
+      ctx.arc(granule.pos.x, granule.pos.y, GRANULE_POINT_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+
+      const momentMagnitude = len(granule.effectiveMoment);
+      if (momentMagnitude > 1e-4) {
+        const arrowLength = clamp(momentMagnitude * 0.18, MIN_GRANULE_ARROW_LENGTH, MAX_GRANULE_ARROW_LENGTH);
+        drawArrow(
+          granule.pos,
+          mul(unit(granule.effectiveMoment), arrowLength),
+          momentColor,
+          clamp(arrowLength / MAX_GRANULE_ARROW_LENGTH, MIN_ARROW_STRENGTH_SCALE, 1)
+        );
+      }
+
+      const forceMagnitude = len(granule.force);
+      if (forceMagnitude > 1e-3) {
+        drawArrow(
+          granule.pos,
+          mul(unit(granule.force), Math.min(MAX_GRANULE_FORCE_ARROW_LENGTH, forceMagnitude * GRANULE_FORCE_ARROW_SCALE)),
+          "rgba(34,197,94,0.72)",
+          0.35
+        );
+      }
+    }
+  }
+
+  function drawBody(body, granules) {
     const selected = body.id === state.selectedBodyId;
     const material = materialById(body.materialId);
     ctx.save();
@@ -1400,6 +1534,7 @@
 
     ctx.restore();
 
+    drawBodyGranules(body, granules);
     drawArrow(body.pos, mul(unit(body.force), Math.min(32, len(body.force) * 0.02)), "#22c55e");
     drawArrow(body.pos, v(0, clamp(-body.torque * 0.04, -26, 26)), "#a78bfa");
 
@@ -1421,8 +1556,15 @@
   }
 
   function render() {
+    const magneticAnalysis = buildMagneticGranuleAnalysis();
+    state.magneticGranules = magneticAnalysis.granules;
+    const granulesByBody = new Map();
+    for (const granule of magneticAnalysis.granules) {
+      if (!granulesByBody.has(granule.bodyId)) granulesByBody.set(granule.bodyId, []);
+      granulesByBody.get(granule.bodyId).push(granule);
+    }
     ctx.clearRect(0, 0, simCanvas.width, simCanvas.height);
-    drawField();
+    drawField(magneticAnalysis.granules);
 
     ctx.save();
     ctx.translate(state.view.pan.x, state.view.pan.y);
@@ -1440,7 +1582,7 @@
       ctx.stroke();
     }
 
-    for (const body of state.bodies) drawBody(body);
+    for (const body of state.bodies) drawBody(body, granulesByBody.get(body.id));
     ctx.restore();
   }
 
@@ -1612,6 +1754,7 @@
       state.selectedBodyId = data.selectedBodyId || state.bodies[0]?.id || null;
       state.selectedConstraintId = data.selectedConstraintId || null;
       state.selectedMaterialId = data.selectedMaterialId || state.materials[0]?.id || null;
+      state.magneticGranules = [];
       state.view.pan = v(0, 0);
       state.view.isPanning = false;
       state.view.inputSource = null;
