@@ -37,6 +37,7 @@
   const RIGHT_MOUSE_BUTTON = 2;
   const DEFAULT_FIELD_ARROW_COLOR = "rgba(147,197,253,0.5)";
   const DEFAULT_HEATMAP_ALPHA = 0.72;
+  const HEATMAP_TILE_OVERLAP = 1;
   const SOUTH_POLE_COLOR = { r: 96, g: 165, b: 250 };
   const NORTH_POLE_COLOR = { r: 248, g: 113, b: 113 };
   const CONSTRAINT_PICK_DISTANCE = 12;
@@ -373,6 +374,7 @@
   }
 
   function bodyUsesMagneticGranules(body) {
+    // Every body now exposes editable material granules so neutral, north, and south pixels can be painted directly.
     return true;
   }
 
@@ -1808,7 +1810,7 @@
         const alpha = strength * DEFAULT_HEATMAP_ALPHA;
         const screenPoint = worldToScreen(v(x, y));
         ctx.fillStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
-        ctx.fillRect(screenPoint.x, screenPoint.y, spacing + 1, spacing + 1);
+        ctx.fillRect(screenPoint.x, screenPoint.y, spacing + HEATMAP_TILE_OVERLAP, spacing + HEATMAP_TILE_OVERLAP);
       }
     }
   }
@@ -2361,7 +2363,8 @@
     for (const granule of body.granules) {
       const influenceRadius = granule.sampleRadius * (0.85 + brushRadius * 1.45);
       if (len(sub(localPoint, granule.localPos)) > influenceRadius) continue;
-      if ((Number(body.polePaint[granule.index]) || 0) === brushMode) continue;
+      const currentPole = Number(body.polePaint[granule.index]) || 0;
+      if (currentPole === brushMode) continue;
       body.polePaint[granule.index] = brushMode;
       changed = true;
     }
