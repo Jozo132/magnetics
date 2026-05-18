@@ -50,6 +50,11 @@
   const MAX_GRANULE_ARROW_LENGTH = 12;
   const GRANULE_FORCE_ARROW_SCALE = 0.014;
   const MAX_GRANULE_FORCE_ARROW_LENGTH = 12;
+  const GRANULE_INDUCTION_ITERATIONS = 2;
+  const GRANULE_PERMANENT_MOMENT_COLOR = "rgba(251,146,60,0.9)";
+  const GRANULE_INDUCED_MOMENT_COLOR = "rgba(226,232,240,0.82)";
+  const GRANULE_PERMANENT_POINT_COLOR = "rgba(253,186,116,0.95)";
+  const GRANULE_INDUCED_POINT_COLOR = "rgba(191,219,254,0.9)";
 
   const MATERIAL_PRESETS = [
     {
@@ -164,6 +169,8 @@
       pointerOffset: { x: 0, y: 0 },
       pointerAngleDelta: 0,
     },
+    magneticAnalysis: null,
+    magneticAnalysisDirty: true,
     magneticGranules: [],
   };
 
@@ -192,6 +199,21 @@
 
   function getEl(id) {
     return document.getElementById(id);
+  }
+
+  function invalidateMagneticAnalysis() {
+    state.magneticAnalysis = null;
+    state.magneticAnalysisDirty = true;
+    state.magneticGranules = [];
+  }
+
+  function getMagneticGranuleAnalysis(forceRefresh = false) {
+    if (!forceRefresh && !state.magneticAnalysisDirty && state.magneticAnalysis) return state.magneticAnalysis;
+    const magneticAnalysis = buildMagneticGranuleAnalysis();
+    state.magneticAnalysis = magneticAnalysis;
+    state.magneticAnalysisDirty = false;
+    state.magneticGranules = magneticAnalysis.granules;
+    return magneticAnalysis;
   }
 
   function screenToWorld(point) {
@@ -330,6 +352,7 @@
     body.magnetic.polarity = Number(body.magnetic.polarity) === -1 ? -1 : 1;
     body.magnetic.remanence = Math.max(0, Number(body.magnetic.remanence) || material.remanenceDefault || 0);
     body.granules = buildBodyGranuleLayout(body);
+    invalidateMagneticAnalysis();
 
     if (!body.setup) body.setup = captureBodySetup(body);
   }
@@ -456,6 +479,7 @@
     if (state.selectedBodyId === bodyId) state.selectedBodyId = null;
     if (!state.constraints.some((constraint) => constraint.id === state.selectedConstraintId)) state.selectedConstraintId = null;
     state.tracking.samples = [];
+    invalidateMagneticAnalysis();
     refreshUiLists();
     loadSelectedBodyIntoForm();
     loadSelectedConstraintIntoForm();
@@ -893,7 +917,7 @@
     state.tracking = { bodyId: null, metric: "force", samples: [] };
     state.selectedBodyId = null;
     state.selectedConstraintId = null;
-    state.magneticGranules = [];
+    invalidateMagneticAnalysis();
     state.view.pan = v(0, 0);
     state.view.isPanning = false;
     state.view.inputSource = null;
@@ -1009,8 +1033,9 @@
       granuleCounts.set(granule.bodyId, (granuleCounts.get(granule.bodyId) || 0) + 1);
     }
 
-    applyInducedGranuleMoments(granules);
-    applyInducedGranuleMoments(granules);
+    for (let iteration = 0; iteration < GRANULE_INDUCTION_ITERATIONS; iteration += 1) {
+      applyInducedGranuleMoments(granules);
+    }
 
     for (const granule of granules) {
       const field = magneticFieldAtPointFromGranules(granule.pos, granules, { excludeBodyId: granule.bodyId });
@@ -1096,8 +1121,7 @@
   }
 
   function applyMagnetics() {
-    const magneticAnalysis = buildMagneticGranuleAnalysis();
-    state.magneticGranules = magneticAnalysis.granules;
+    const magneticAnalysis = getMagneticGranuleAnalysis(true);
     for (const body of state.bodies) {
       const accumulator = magneticAnalysis.bodyAccumulators.get(body.id);
       if (!accumulator) continue;
@@ -1343,6 +1367,7 @@
       solveBodyCollisions();
       solveBoundaryCollisions();
     }
+    invalidateMagneticAnalysis();
   }
 
   function sampleTracking() {
@@ -1450,8 +1475,8 @@
 
   function drawBodyGranules(body, granules) {
     if (!granules?.length) return;
-    const momentColor = magneticEnabled(body) ? "rgba(251,146,60,0.9)" : "rgba(226,232,240,0.82)";
-    const pointColor = magneticEnabled(body) ? "rgba(253,186,116,0.95)" : "rgba(191,219,254,0.9)";
+    const momentColor = magneticEnabled(body) ? GRANULE_PERMANENT_MOMENT_COLOR : GRANULE_INDUCED_MOMENT_COLOR;
+    const pointColor = magneticEnabled(body) ? GRANULE_PERMANENT_POINT_COLOR : GRANULE_INDUCED_POINT_COLOR;
     for (const granule of granules) {
       ctx.fillStyle = pointColor;
       ctx.beginPath();
@@ -1556,8 +1581,7 @@
   }
 
   function render() {
-    const magneticAnalysis = buildMagneticGranuleAnalysis();
-    state.magneticGranules = magneticAnalysis.granules;
+    const magneticAnalysis = getMagneticGranuleAnalysis();
     const granulesByBody = new Map();
     for (const granule of magneticAnalysis.granules) {
       if (!granulesByBody.has(granule.bodyId)) granulesByBody.set(granule.bodyId, []);
@@ -1754,7 +1778,7 @@
       state.selectedBodyId = data.selectedBodyId || state.bodies[0]?.id || null;
       state.selectedConstraintId = data.selectedConstraintId || null;
       state.selectedMaterialId = data.selectedMaterialId || state.materials[0]?.id || null;
-      state.magneticGranules = [];
+      invalidateMagneticAnalysis();
       state.view.pan = v(0, 0);
       state.view.isPanning = false;
       state.view.inputSource = null;
@@ -2055,6 +2079,7 @@
         body.torque = 0;
       }
       body.setup = captureBodySetup(body);
+      invalidateMagneticAnalysis();
       syncSelectedBodyInspector(false);
     });
     window.addEventListener("mouseup", (event) => {
