@@ -22,6 +22,7 @@
   const MAX_MAGNETIC_GRADIENT_EPSILON = 10;
   const MIN_FIELD_SCALE = 10;
   const MAX_FIELD_SCALE = 100000;
+  const BODY_TYPES = ["rectangle", "circle", "polyline"];
   const MAX_FIELD_ARROW_LENGTH = 26;
   const MIN_FIELD_ARROW_LENGTH = 3.5;
   const FIELD_ARROW_LENGTH_SCALE_DIVISOR = 1500;
@@ -335,9 +336,11 @@
     for (let i = 0, j = source.length - 1; i < source.length; j = i, i += 1) {
       const a = source[i];
       const b = source[j];
+      const deltaY = b.y - a.y;
+      if (Math.abs(deltaY) < 1e-10) continue;
       const intersects =
         a.y > point.y !== b.y > point.y &&
-        point.x < ((b.x - a.x) * (point.y - a.y)) / Math.max(1e-8, b.y - a.y) + a.x;
+        point.x < ((b.x - a.x) * (point.y - a.y)) / deltaY + a.x;
       if (intersects) inside = !inside;
     }
     return inside;
@@ -355,7 +358,13 @@
 
   function bodyBoundingRadius(body) {
     if (body.type === "circle") return body.radius;
-    if (body.type === "polyline") return Math.max(...(body.points?.map((point) => Math.hypot(point.x, point.y)) || [Math.hypot(body.width * 0.5, body.height * 0.5)]));
+    if (body.type === "polyline") {
+      let maxRadius = Math.hypot(body.width * 0.5, body.height * 0.5);
+      for (const point of body.points || []) {
+        maxRadius = Math.max(maxRadius, Math.hypot(point.x, point.y));
+      }
+      return maxRadius;
+    }
     return Math.hypot(body.width * 0.5, body.height * 0.5);
   }
 
@@ -438,7 +447,7 @@
       }
       if (!localPoints.length) localPoints.push(v(center.x, center.y));
       const sampleRadius = granuleSampleRadius(xAxis, yAxis);
-      const share = 1 / Math.max(1, localPoints.length);
+      const share = 1 / localPoints.length;
       return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
     }
 
@@ -451,14 +460,14 @@
       }
     }
     const sampleRadius = granuleSampleRadius(xAxis, yAxis);
-    const share = 1 / Math.max(1, localPoints.length);
+    const share = 1 / localPoints.length;
     return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
   }
 
   function syncBodyDerived(body) {
     const material = materialById(body.materialId);
     body.materialId = material.id;
-    body.type = ["rectangle", "circle", "polyline"].includes(body.type) ? body.type : "rectangle";
+    body.type = BODY_TYPES.includes(body.type) ? body.type : "rectangle";
     body.points = (body.points?.length ? body.points : defaultPolylinePoints()).map((point) => v(Number(point.x) || 0, Number(point.y) || 0));
     if (body.type === "polyline") {
       const bounds = polygonBounds(body.points);
@@ -1861,8 +1870,17 @@
       ) {
         break;
       }
-      if (points.some((point) => len(sub(point, worldToScreen(next))) < FIELD_LINE_LOOP_THRESHOLD)) break;
-      points.push(worldToScreen(next));
+      const nextScreenPoint = worldToScreen(next);
+      const recentPointStart = Math.max(0, points.length - 24);
+      let loopsBack = false;
+      for (let pointIndex = recentPointStart; pointIndex < points.length; pointIndex += 1) {
+        if (len(sub(points[pointIndex], nextScreenPoint)) < FIELD_LINE_LOOP_THRESHOLD) {
+          loopsBack = true;
+          break;
+        }
+      }
+      if (loopsBack) break;
+      points.push(nextScreenPoint);
       current = next;
       lastDirection = direction;
     }
@@ -2162,7 +2180,7 @@
       for (const source of data.bodies || []) {
         const body = {
           id: Number(source.id) || nextBodyId++,
-          type: ["circle", "rectangle", "polyline"].includes(source.type) ? source.type : "rectangle",
+          type: BODY_TYPES.includes(source.type) ? source.type : "rectangle",
           pos: v(Number(source.pos?.x) || 0, Number(source.pos?.y) || 0),
           vel: v(Number(source.vel?.x) || 0, Number(source.vel?.y) || 0),
           force: v(0, 0),
