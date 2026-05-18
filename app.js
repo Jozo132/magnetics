@@ -3,6 +3,7 @@
   const plotCanvas = document.getElementById("plotCanvas");
   const ctx = simCanvas.getContext("2d");
   const pctx = plotCanvas.getContext("2d");
+  let cachedSimCanvasRect = null;
 
   const TRACK_SAMPLE_LIMIT = 5000;
   const FIXED_DT = 1 / 180;
@@ -269,7 +270,7 @@
   }
 
   function canvasPointFromMouseEvent(event) {
-    const rect = simCanvas.getBoundingClientRect();
+    const rect = getSimCanvasRect();
     const scaleX = simCanvas.width / rect.width;
     const scaleY = simCanvas.height / rect.height;
     return v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
@@ -277,6 +278,11 @@
 
   function worldPointFromMouseEvent(event) {
     return screenToWorld(canvasPointFromMouseEvent(event));
+  }
+
+  function getSimCanvasRect() {
+    if (!cachedSimCanvasRect) cachedSimCanvasRect = simCanvas.getBoundingClientRect();
+    return cachedSimCanvasRect;
   }
 
   function localPointToWorld(body, localPoint) {
@@ -2636,10 +2642,11 @@
     getEl("poleBrushRadius").value = String(state.poleBrush.radius);
     const selectedBody = state.bodies.find((entry) => entry.id === state.selectedBodyId);
     const brushStrength = selectedBody ? selectedBody.magnetic.strength : Math.max(0, Number(getEl("poleBrushStrength").value) || 40);
+    const roundedBrushStrength = Math.round(brushStrength);
     getEl("sceneBrushSize").value = String(state.poleBrush.radius);
-    getEl("sceneBrushStrength").value = String(Math.round(brushStrength));
+    getEl("sceneBrushStrength").value = String(roundedBrushStrength);
     getEl("sceneBrushSizeValue").textContent = String(state.poleBrush.radius);
-    getEl("sceneBrushStrengthValue").textContent = String(Math.round(brushStrength));
+    getEl("sceneBrushStrengthValue").textContent = String(roundedBrushStrength);
     getEl("sceneSelectToolBtn").classList.toggle("active", !state.poleBrush.enabled);
     getEl("sceneBrushToolBtn").classList.toggle("active", state.poleBrush.enabled);
     for (const button of document.querySelectorAll("[data-scene-brush-mode]")) {
@@ -3101,7 +3108,7 @@
       clearSelectedConstraint();
     });
     window.addEventListener("mousemove", (event) => {
-      const canvasRect = simCanvas.getBoundingClientRect();
+      const canvasRect = getSimCanvasRect();
       const shouldTrackPointer = state.pointer.insideCanvas || state.interaction.mode || state.view.isPanning;
       state.pointer.world = shouldTrackPointer ? worldPointFromMouseEvent(event) : null;
       if (state.view.isPanning && state.view.inputSource === "mouse") {
@@ -3161,6 +3168,9 @@
       state.pointer.world = null;
       state.pointer.insideCanvas = false;
       stopBodyInteraction();
+    });
+    window.addEventListener("resize", () => {
+      cachedSimCanvasRect = null;
     });
   }
 
