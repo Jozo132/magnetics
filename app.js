@@ -269,15 +269,14 @@
     return add(point, state.view.pan);
   }
 
-  function canvasPointFromMouseEvent(event) {
-    const rect = getSimCanvasRect();
+  function canvasPointFromMouseEvent(event, rect = getSimCanvasRect()) {
     const scaleX = simCanvas.width / rect.width;
     const scaleY = simCanvas.height / rect.height;
     return v((event.clientX - rect.left) * scaleX, (event.clientY - rect.top) * scaleY);
   }
 
-  function worldPointFromMouseEvent(event) {
-    return screenToWorld(canvasPointFromMouseEvent(event));
+  function worldPointFromMouseEvent(event, rect = getSimCanvasRect()) {
+    return screenToWorld(canvasPointFromMouseEvent(event, rect));
   }
 
   function getSimCanvasRect() {
@@ -351,6 +350,10 @@
 
   function formatPolylinePoints(points) {
     return (points?.length ? points : defaultPolylinePoints()).map((point) => `${point.x.toFixed(0)},${point.y.toFixed(0)}`).join("\n");
+  }
+
+  function clonePolylinePoints(points) {
+    return (points?.length ? points : defaultPolylinePoints()).map((point) => v(point.x, point.y));
   }
 
   function setPolylineSummary(points) {
@@ -2340,8 +2343,8 @@
     const startPoints = state.interaction.startPoints;
     const handle = state.interaction.handle;
     if (!startPoints || !handle) return;
-    body.points = startPoints.map((point) => v(point.x, point.y));
-    body.points[handle.vertexIndex] = worldPointToLocal(body, worldPoint);
+    const targetPoint = worldPointToLocal(body, worldPoint);
+    body.points = startPoints.map((point, index) => (index === handle.vertexIndex ? targetPoint : v(point.x, point.y)));
     commitDirectBodyEdit(body);
   }
 
@@ -2360,6 +2363,7 @@
   }
 
   function insertPolylineVertex(body, edgeIndex, localPoint) {
+    if (!Array.isArray(body.points) || !body.points.length) body.points = clonePolylinePoints(body.points);
     const nextIndex = (edgeIndex + 1) % body.points.length;
     body.points.splice(nextIndex, 0, v(localPoint.x, localPoint.y));
     commitDirectBodyEdit(body);
@@ -3008,7 +3012,7 @@
     });
     simCanvas.addEventListener("mouseleave", () => {
       state.pointer.insideCanvas = false;
-      state.pointer.world = null;
+      if (!state.interaction.mode && !state.view.isPanning) state.pointer.world = null;
     });
     simCanvas.addEventListener("dblclick", (event) => {
       if (event.button !== LEFT_MOUSE_BUTTON) return;
@@ -3062,7 +3066,7 @@
           state.interaction.mode = "vertex";
           state.interaction.bodyId = selectedBody.id;
           state.interaction.handle = handle;
-          state.interaction.startPoints = selectedBody.points.map((entry) => v(entry.x, entry.y));
+          state.interaction.startPoints = clonePolylinePoints(selectedBody.points);
           setInteractionSummary(`Dragging vertex ${handle.vertexIndex + 1} on shape #${selectedBody.id}`);
           return;
         }
@@ -3071,7 +3075,7 @@
           state.interaction.mode = "vertex";
           state.interaction.bodyId = selectedBody.id;
           state.interaction.handle = { kind: "vertex", vertexIndex: insertedIndex };
-          state.interaction.startPoints = selectedBody.points.map((entry) => v(entry.x, entry.y));
+          state.interaction.startPoints = clonePolylinePoints(selectedBody.points);
           setInteractionSummary(`Inserted a new vertex on shape #${selectedBody.id}`);
           return;
         }
@@ -3080,7 +3084,7 @@
           state.interaction.mode = "edge";
           state.interaction.bodyId = selectedBody.id;
           state.interaction.handle = polylineEdge;
-          state.interaction.startPoints = selectedBody.points.map((entry) => v(entry.x, entry.y));
+          state.interaction.startPoints = clonePolylinePoints(selectedBody.points);
           state.interaction.startLocalPoint = worldPointToLocal(selectedBody, point);
           setInteractionSummary(`Dragging edge ${polylineEdge.edgeIndex + 1} on shape #${selectedBody.id}`);
           return;
@@ -3110,7 +3114,7 @@
     window.addEventListener("mousemove", (event) => {
       const canvasRect = getSimCanvasRect();
       const shouldTrackPointer = state.pointer.insideCanvas || state.interaction.mode || state.view.isPanning;
-      state.pointer.world = shouldTrackPointer ? worldPointFromMouseEvent(event) : null;
+      state.pointer.world = shouldTrackPointer ? worldPointFromMouseEvent(event, canvasRect) : null;
       if (state.view.isPanning && state.view.inputSource === "mouse") {
         const scaleX = simCanvas.width / canvasRect.width;
         const scaleY = simCanvas.height / canvasRect.height;
