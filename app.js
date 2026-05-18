@@ -2351,7 +2351,7 @@
   }
 
   function insertPolylineVertex(body, edgeIndex, localPoint) {
-    const nextIndex = edgeIndex + 1;
+    const nextIndex = edgeIndex >= body.points.length - 1 ? body.points.length : edgeIndex + 1;
     body.points.splice(nextIndex, 0, v(localPoint.x, localPoint.y));
     commitDirectBodyEdit(body);
     return nextIndex;
