@@ -387,6 +387,10 @@
     return true;
   }
 
+  function bodyHasMagneticBehavior(body) {
+    return magneticEnabled(body) || bodyHasPaintedPoles(body);
+  }
+
   // Creates centered sample positions along one local axis so the body can be split into evenly spaced magnetic granules.
   function buildGranuleAxisSamples(length, requestedCount = DEFAULT_GRANULES_PER_AXIS) {
     const safeLength = Math.max(length, MIN_GRANULE_SAMPLE_RADIUS * 2);
@@ -460,7 +464,7 @@
       }
     }
     const sampleRadius = granuleSampleRadius(xAxis, yAxis);
-    const share = 1 / localPoints.length;
+    const share = 1 / Math.max(1, localPoints.length);
     return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
   }
 
@@ -761,7 +765,7 @@
     getEl("shapeSurfaceResistance").value = body.surfaceResistance.toFixed(3);
     getEl("shapeMaterial").value = material.id;
     getEl("shapeFixed").checked = body.fixed;
-    getEl("shapeMagnetic").checked = magneticEnabled(body) || bodyHasPaintedPoles(body);
+    getEl("shapeMagnetic").checked = bodyHasMagneticBehavior(body);
     getEl("shapeMagModel").value = body.magnetic.model;
     getEl("shapeMagAngle").value = ((body.magnetic.localAngle * 180) / Math.PI).toFixed(2);
     getEl("shapePolarity").value = String(body.magnetic.polarity || 1);
@@ -1969,8 +1973,8 @@
     ctx.translate(body.pos.x, body.pos.y);
     ctx.rotate(body.angle);
     ctx.lineWidth = selected ? 3 : 1.5;
-    ctx.strokeStyle = selected ? "#facc15" : magneticEnabled(body) || bodyHasPaintedPoles(body) ? "#f97316" : "#38bdf8";
-    ctx.fillStyle = magneticEnabled(body) || bodyHasPaintedPoles(body) ? "rgba(124,45,18,0.24)" : "rgba(30,41,59,0.7)";
+    ctx.strokeStyle = selected ? "#facc15" : bodyHasMagneticBehavior(body) ? "#f97316" : "#38bdf8";
+    ctx.fillStyle = bodyHasMagneticBehavior(body) ? "rgba(124,45,18,0.24)" : "rgba(30,41,59,0.7)";
 
     if (body.type === "circle") {
       ctx.beginPath();
