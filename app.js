@@ -2351,7 +2351,7 @@
   }
 
   function insertPolylineVertex(body, edgeIndex, localPoint) {
-    const nextIndex = edgeIndex >= body.points.length - 1 ? body.points.length : edgeIndex + 1;
+    const nextIndex = (edgeIndex + 1) % body.points.length;
     body.points.splice(nextIndex, 0, v(localPoint.x, localPoint.y));
     commitDirectBodyEdit(body);
     return nextIndex;
@@ -3099,13 +3099,8 @@
     });
     window.addEventListener("mousemove", (event) => {
       const canvasRect = simCanvas.getBoundingClientRect();
-      const insideCanvas =
-        event.clientX >= canvasRect.left &&
-        event.clientX <= canvasRect.right &&
-        event.clientY >= canvasRect.top &&
-        event.clientY <= canvasRect.bottom;
-      state.pointer.insideCanvas = insideCanvas;
-      state.pointer.world = insideCanvas || state.interaction.mode || state.view.isPanning ? worldPointFromMouseEvent(event) : null;
+      const shouldTrackPointer = state.pointer.insideCanvas || state.interaction.mode || state.view.isPanning;
+      state.pointer.world = shouldTrackPointer ? worldPointFromMouseEvent(event) : null;
       if (state.view.isPanning && state.view.inputSource === "mouse") {
         const scaleX = simCanvas.width / canvasRect.width;
         const scaleY = simCanvas.height / canvasRect.height;
