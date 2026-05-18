@@ -897,8 +897,7 @@
     const material = materialById(body.materialId);
     const susceptibility = Math.max(0, material.susceptibility);
     if (susceptibility === 0) return v(0, 0);
-    const geometryScale =
-      body.type === "circle" ? Math.PI * body.radius * body.radius : Math.max(body.width, body.height) * Math.min(body.width, body.height);
+    const geometryScale = body.type === "circle" ? Math.PI * body.radius * body.radius : body.width * body.height;
     const magnitude =
       fieldMagnitude *
       susceptibility *
@@ -984,8 +983,7 @@
         const targetMoment = add(targetBaseMoment, inducedMagneticMoment(target, fieldAtTarget));
         if (len(targetMoment) < MIN_EFFECTIVE_MAGNETIC_MOMENT) continue;
 
-        const energyDensityAt = (point, targetMomentAtPoint) =>
-          dot(targetMomentAtPoint, dipoleFieldFromMomentAtPoint(source.pos, sourceMoment, point));
+        const energyDensityAt = (point, targetMoment) => dot(targetMoment, dipoleFieldFromMomentAtPoint(source.pos, sourceMoment, point));
         const gradX =
           (energyDensityAt(add(target.pos, v(epsilon, 0)), targetMoment) - energyDensityAt(add(target.pos, v(-epsilon, 0)), targetMoment)) /
           (2 * epsilon);
@@ -1317,9 +1315,9 @@
     const offsetStart = -((subsamples - 1) * resolution) / 2;
     const worldTopLeft = screenToWorld(v(0, 0));
     const worldBottomRight = screenToWorld(v(simCanvas.width, simCanvas.height));
-    const alignToGrid = (coord) => Math.floor((coord - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
-    const startX = alignToGrid(worldTopLeft.x);
-    const startY = alignToGrid(worldTopLeft.y);
+    const snapToGrid = (coord) => Math.floor((coord - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
+    const startX = snapToGrid(worldTopLeft.x);
+    const startY = snapToGrid(worldTopLeft.y);
 
     for (let y = startY; y <= worldBottomRight.y + arrowSpacing; y += arrowSpacing) {
       for (let x = startX; x <= worldBottomRight.x + arrowSpacing; x += arrowSpacing) {
