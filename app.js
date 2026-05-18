@@ -1716,11 +1716,11 @@
     }
   }
 
-  function openEditorModal(view) {
+  function showEditorView(view) {
     setEditorView(view);
   }
 
-  function closeEditorModal() {
+  function cancelCanvasInteraction() {
     stopBodyInteraction();
   }
 
@@ -1733,14 +1733,14 @@
     getEl("stepBtn").addEventListener("click", () => step(FIXED_DT));
     getEl("resetBtn").addEventListener("click", resetDynamics);
     getEl("clearProjectBtn").addEventListener("click", clearProject);
-    getEl("openShapeModalBtn").addEventListener("click", () => setEditorView("shape"));
-    getEl("openConstraintModalBtn").addEventListener("click", () => setEditorView("constraint"));
-    getEl("openOptionsModalBtn").addEventListener("click", () => setEditorView("options"));
+    getEl("openShapeModalBtn").addEventListener("click", () => showEditorView("shape"));
+    getEl("openConstraintModalBtn").addEventListener("click", () => showEditorView("constraint"));
+    getEl("openOptionsModalBtn").addEventListener("click", () => showEditorView("options"));
     for (const id of ["shapeTabBtn", "constraintTabBtn", "optionsTabBtn"]) {
       getEl(id).addEventListener("click", (event) => setEditorView(event.target.dataset.editorView));
     }
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closeEditorModal();
+      if (event.key === "Escape") cancelCanvasInteraction();
     });
 
     getEl("addShapeBtn").addEventListener("click", () => {
