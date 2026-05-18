@@ -48,8 +48,11 @@
   const POLYLINE_VERTEX_HANDLE_RADIUS = 8;
   const POLYLINE_INSERT_HANDLE_RADIUS = 7;
   const POLYLINE_EDGE_PICK_DISTANCE = 12;
+  const MIN_POLYLINE_VERTICES = 3;
   const MIN_BODY_AXIS_SIZE = 12;
   const MIN_CIRCLE_RADIUS = 8;
+  const BRUSH_BASE_RADIUS_FACTOR = 0.85;
+  const BRUSH_RADIUS_SCALE_FACTOR = 1.45;
   // Granule tuning values control how each rigid body is discretized for magnetic sampling and visualization.
   const MIN_GRANULES_PER_AXIS = 2;
   const DEFAULT_GRANULES_PER_AXIS = 4;
@@ -2261,7 +2264,7 @@
           closestDistance = distance;
         }
       }
-      previewRadius = closestGranule.sampleRadius * (0.85 + state.poleBrush.radius * 1.45);
+      previewRadius = closestGranule.sampleRadius * (BRUSH_BASE_RADIUS_FACTOR + state.poleBrush.radius * BRUSH_RADIUS_SCALE_FACTOR);
     }
     ctx.save();
     ctx.strokeStyle = state.poleBrush.mode > 0 ? "rgba(248,113,113,0.94)" : state.poleBrush.mode < 0 ? "rgba(96,165,250,0.94)" : "rgba(148,163,184,0.94)";
@@ -2358,7 +2361,7 @@
   }
 
   function removePolylineVertex(body, vertexIndex) {
-    if (body.type !== "polyline" || (body.points?.length || 0) <= 3) return false;
+    if (body.type !== "polyline" || (body.points?.length || 0) <= MIN_POLYLINE_VERTICES) return false;
     body.points.splice(vertexIndex, 1);
     commitDirectBodyEdit(body);
     setInteractionSummary(`Removed vertex ${vertexIndex + 1} from shape #${body.id}`);
@@ -2646,7 +2649,7 @@
     getEl("sceneToolState").textContent = state.poleBrush.enabled ? "Pole Brush" : "Select";
     getEl("sceneToolHint").textContent = selectedBody
       ? bodyType === "polyline"
-        ? "Drag vertex handles, drag line segments, or use cyan insert handles to add new vertices."
+        ? "Drag vertex handles, drag edges, or use cyan insert handles to add new vertices."
         : bodyType === "circle"
           ? "Drag cyan edge handles to resize, drag the body to move, and use the gold handle to rotate."
           : "Drag cyan edge or corner handles to resize, drag the body to move, and use the gold handle to rotate."
@@ -2722,7 +2725,7 @@
     let changed = false;
     for (let index = 0; index < body.granules.length; index += 1) {
       const granule = body.granules[index];
-      const influenceRadius = granule.sampleRadius * (0.85 + brushRadius * 1.45);
+      const influenceRadius = granule.sampleRadius * (BRUSH_BASE_RADIUS_FACTOR + brushRadius * BRUSH_RADIUS_SCALE_FACTOR);
       if (len(sub(localPoint, granule.localPos)) > influenceRadius) continue;
       const currentPole = Number(body.polePaint[index]) || 0;
       if (currentPole === brushMode) continue;
