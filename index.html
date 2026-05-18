@@ -26,28 +26,17 @@
     </header>
 
     <main class="app-shell">
-      <section class="workspace">
-        <div class="workspace-header">
-          <div id="selectionSummary" class="status-chip">No shapes selected</div>
-          <div id="constraintSummary" class="status-chip">No constraints</div>
+      <aside class="sidebar" aria-labelledby="sidebarTitle">
+        <div class="sidebar-header">
+          <h2 id="sidebarTitle">Inspector</h2>
+          <p class="sidebar-subtitle">Select a shape or constraint to edit it directly.</p>
         </div>
-        <canvas id="simCanvas" width="980" height="620"></canvas>
-        <canvas id="plotCanvas" width="980" height="230"></canvas>
-      </section>
-    </main>
-
-    <div id="modalOverlay" class="modal-overlay hidden" aria-hidden="true">
-      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-        <div class="modal-header">
-          <h2 id="modalTitle">Editor</h2>
-          <button id="modalCloseBtn" class="icon-btn" aria-label="Close editor">✕</button>
-        </div>
-        <div class="modal-tabs">
+        <div class="sidebar-tabs">
           <button id="shapeTabBtn" class="tab-btn active" data-editor-view="shape">Shapes</button>
           <button id="constraintTabBtn" class="tab-btn" data-editor-view="constraint">Constraints</button>
           <button id="optionsTabBtn" class="tab-btn" data-editor-view="options">Options</button>
         </div>
-        <div class="modal-body">
+        <div class="sidebar-body">
           <section id="shapePanel" class="editor-panel">
             <div class="panel-section">
               <div class="section-heading">
@@ -218,8 +207,18 @@
             </div>
           </section>
         </div>
+      </aside>
+
+      <section class="workspace">
+        <div class="workspace-header">
+          <div id="selectionSummary" class="status-chip">No shapes selected</div>
+          <div id="constraintSummary" class="status-chip">No constraints</div>
+          <div id="interactionSummary" class="status-chip">Left drag moves · rotate handle turns · right drag pans</div>
+        </div>
+        <canvas id="simCanvas" width="980" height="620"></canvas>
+        <canvas id="plotCanvas" width="980" height="230"></canvas>
       </section>
-    </div>
+    </main>
 
     <script src="./app.js"></script>
   </body>

@@ -15,6 +15,8 @@
   const MAGNETIC_TORQUE_SCALE = 0.45;
   const MAX_MAGNETIC_FORCE = 16000;
   const MIN_MAGNETIC_DISTANCE = 18;
+  const INDUCED_MAGNETIC_RESPONSE_SCALE = 0.00034;
+  const MIN_EFFECTIVE_MAGNETIC_MOMENT = 0.02;
   const MAGNETIC_GRADIENT_EPSILON_SCALE = 0.07;
   const MIN_MAGNETIC_GRADIENT_EPSILON = 2;
   const MAX_MAGNETIC_GRADIENT_EPSILON = 10;
@@ -36,6 +38,9 @@
   const DEFAULT_FIELD_ARROW_COLOR = "rgba(147,197,253,0.5)";
   const SOUTH_POLE_COLOR = { r: 96, g: 165, b: 250 };
   const NORTH_POLE_COLOR = { r: 248, g: 113, b: 113 };
+  const CONSTRAINT_PICK_DISTANCE = 12;
+  const ROTATE_HANDLE_OFFSET = 34;
+  const ROTATE_HANDLE_RADIUS = 9;
 
   const MATERIAL_PRESETS = [
     {
@@ -144,6 +149,12 @@
       inputSource: null,
       lastPointerClient: { x: 0, y: 0 },
     },
+    interaction: {
+      mode: null,
+      bodyId: null,
+      pointerOffset: { x: 0, y: 0 },
+      pointerAngleDelta: 0,
+    },
   };
 
   const v = (x = 0, y = 0) => ({ x, y });
@@ -192,6 +203,15 @@
     return screenToWorld(canvasPointFromMouseEvent(event));
   }
 
+  function distancePointToSegment(point, a, b) {
+    const segment = sub(b, a);
+    const lengthSquared = dot(segment, segment);
+    if (lengthSquared <= 1e-8) return len(sub(point, a));
+    const t = clamp(dot(sub(point, a), segment) / lengthSquared, 0, 1);
+    const projection = add(a, mul(segment, t));
+    return len(sub(point, projection));
+  }
+
   function materialById(materialId) {
     return state.materials.find((material) => material.id === materialId) || state.materials[0];
   }
@@ -213,6 +233,11 @@
   function magneticAxis(body) {
     const angle = body.angle + (body.magnetic?.localAngle || 0);
     return v(Math.cos(angle), Math.sin(angle));
+  }
+
+  function hasFerromagneticResponse(body) {
+    const material = materialById(body.materialId);
+    return material.permeability > 1.05 || Math.abs(material.susceptibility) > 0.02;
   }
 
   function syncBodyDerived(body) {
@@ -491,6 +516,7 @@
     loadSelectedBodyIntoForm();
     refreshShapeTable();
     refreshStatusSummary();
+    if (state.selectedBodyId != null) showEditorView("shape");
   }
 
   function loadSelectedBodyIntoForm() {
@@ -549,10 +575,18 @@
     getEl("constraintK").value = 8;
   }
 
+  function clearSelectedConstraint() {
+    state.selectedConstraintId = null;
+    refreshConstraintTable();
+    refreshStatusSummary();
+  }
+
   function setSelectedConstraint(constraintId) {
     state.selectedConstraintId = constraintId || null;
     loadSelectedConstraintIntoForm();
     refreshConstraintTable();
+    refreshStatusSummary();
+    if (state.selectedConstraintId != null) showEditorView("constraint");
   }
 
   function loadSelectedConstraintIntoForm() {
@@ -682,12 +716,15 @@
 
   function refreshStatusSummary() {
     const selectedBody = state.bodies.find((body) => body.id === state.selectedBodyId);
+    const selectedConstraint = state.constraints.find((constraint) => constraint.id === state.selectedConstraintId);
     getEl("selectionSummary").textContent = selectedBody
       ? `${selectedBody.fixed ? "📌 " : ""}Selected shape: #${selectedBody.id} ${selectedBody.type}`
       : "No shapes selected";
-    getEl("constraintSummary").textContent = state.constraints.length
-      ? `${state.constraints.length} constraint${state.constraints.length === 1 ? "" : "s"}`
-      : "No constraints";
+    getEl("constraintSummary").textContent = selectedConstraint
+      ? `Selected constraint: ${selectedConstraint.id} (#${selectedConstraint.aId} ↔ #${selectedConstraint.bId})`
+      : state.constraints.length
+        ? `${state.constraints.length} constraint${state.constraints.length === 1 ? "" : "s"}`
+        : "No constraints";
   }
 
   function refreshUiLists() {
@@ -777,6 +814,7 @@
     accumulator = 0;
     worldTime = 0;
     state.tracking.samples = [];
+    stopBodyInteraction();
     for (const body of state.bodies) {
       applyBodySetup(body, body.setup || captureBodySetup(body));
     }
@@ -796,6 +834,7 @@
     state.view.pan = v(0, 0);
     state.view.isPanning = false;
     state.view.inputSource = null;
+    stopBodyInteraction();
     refreshUiLists();
     clearShapeForm();
     clearConstraintForm();
@@ -826,7 +865,7 @@
     }
   }
 
-  function magneticMoment(body) {
+  function configuredMagneticMoment(body) {
     if (!magneticEnabled(body)) return v(0, 0);
     const material = materialById(body.materialId);
     const axis = magneticAxis(body);
@@ -836,15 +875,35 @@
     return mul(axis, magnitude);
   }
 
-  function dipoleFieldFromBodyAtPoint(body, point) {
-    const moment = magneticMoment(body);
+  function dipoleFieldFromMomentAtPoint(origin, moment, point) {
     if (len(moment) < 1e-8) return v(0, 0);
-    const offset = sub(point, body.pos);
+    const offset = sub(point, origin);
     const distance = Math.max(MIN_MAGNETIC_DISTANCE, len(offset));
     const direction = mul(offset, 1 / distance);
     const momentAlignment = dot(moment, direction);
     const scale = MAGNETIC_FIELD_SCALE / (distance * distance * distance);
     return mul(sub(mul(direction, 3 * momentAlignment), moment), scale);
+  }
+
+  function dipoleFieldFromBodyAtPoint(body, point) {
+    return dipoleFieldFromMomentAtPoint(body.pos, configuredMagneticMoment(body), point);
+  }
+
+  function inducedMagneticMoment(body, field) {
+    if (!hasFerromagneticResponse(body)) return v(0, 0);
+    const fieldMagnitude = len(field);
+    if (fieldMagnitude < 1e-6) return v(0, 0);
+    const material = materialById(body.materialId);
+    const susceptibility = Math.max(0, material.susceptibility);
+    if (susceptibility === 0) return v(0, 0);
+    const geometryScale = body.type === "circle" ? Math.PI * body.radius * body.radius : body.width * body.height;
+    const magnitude =
+      fieldMagnitude *
+      susceptibility *
+      Math.sqrt(Math.max(1, material.permeability)) *
+      geometryScale *
+      INDUCED_MAGNETIC_RESPONSE_SCALE;
+    return mul(unit(field), magnitude);
   }
 
   function magneticFieldAtPoint(point) {
@@ -901,38 +960,49 @@
       for (let j = i + 1; j < state.bodies.length; j += 1) {
         const a = state.bodies[i];
         const b = state.bodies[j];
-        if (!magneticEnabled(a) || !magneticEnabled(b)) continue;
+        const baseMomentA = configuredMagneticMoment(a);
+        const baseMomentB = configuredMagneticMoment(b);
+        const hasBaseA = len(baseMomentA) >= MIN_EFFECTIVE_MAGNETIC_MOMENT;
+        const hasBaseB = len(baseMomentB) >= MIN_EFFECTIVE_MAGNETIC_MOMENT;
+        if (!hasBaseA && !hasBaseB) continue;
 
-        const delta = sub(b.pos, a.pos);
+        const source = !hasBaseA && hasBaseB ? b : a;
+        const target = source === a ? b : a;
+        const sourceMoment = source === a ? baseMomentA : baseMomentB;
+        const targetBaseMoment = source === a ? baseMomentB : baseMomentA;
+
+        const delta = sub(target.pos, source.pos);
         const distance = Math.max(MIN_MAGNETIC_DISTANCE, len(delta));
         const epsilon = clamp(
           distance * MAGNETIC_GRADIENT_EPSILON_SCALE,
           MIN_MAGNETIC_GRADIENT_EPSILON,
           MAX_MAGNETIC_GRADIENT_EPSILON
         );
-        const momentB = magneticMoment(b);
-        const momentA = magneticMoment(a);
+        const fieldAtTarget = dipoleFieldFromMomentAtPoint(source.pos, sourceMoment, target.pos);
+        const targetMoment = add(targetBaseMoment, inducedMagneticMoment(target, fieldAtTarget));
+        if (len(targetMoment) < MIN_EFFECTIVE_MAGNETIC_MOMENT) continue;
 
-        const energyDensityAt = (point, source, targetMoment) => dot(targetMoment, dipoleFieldFromBodyAtPoint(source, point));
+        const energyDensityAt = (point, targetMoment) => dot(targetMoment, dipoleFieldFromMomentAtPoint(source.pos, sourceMoment, point));
         const gradX =
-          (energyDensityAt(add(b.pos, v(epsilon, 0)), a, momentB) - energyDensityAt(add(b.pos, v(-epsilon, 0)), a, momentB)) /
+          (energyDensityAt(add(target.pos, v(epsilon, 0)), targetMoment) - energyDensityAt(add(target.pos, v(-epsilon, 0)), targetMoment)) /
           (2 * epsilon);
         const gradY =
-          (energyDensityAt(add(b.pos, v(0, epsilon)), a, momentB) - energyDensityAt(add(b.pos, v(0, -epsilon)), a, momentB)) /
+          (energyDensityAt(add(target.pos, v(0, epsilon)), targetMoment) - energyDensityAt(add(target.pos, v(0, -epsilon)), targetMoment)) /
           (2 * epsilon);
-        let forceOnB = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
-        const forceMagnitude = len(forceOnB);
+        let forceOnTarget = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
+        const forceMagnitude = len(forceOnTarget);
         if (forceMagnitude > MAX_MAGNETIC_FORCE) {
-          forceOnB = mul(unit(forceOnB), MAX_MAGNETIC_FORCE);
+          forceOnTarget = mul(unit(forceOnTarget), MAX_MAGNETIC_FORCE);
         }
 
-        a.force = sub(a.force, forceOnB);
-        b.force = add(b.force, forceOnB);
+        source.force = sub(source.force, forceOnTarget);
+        target.force = add(target.force, forceOnTarget);
 
-        const fieldAtB = dipoleFieldFromBodyAtPoint(a, b.pos);
-        const fieldAtA = dipoleFieldFromBodyAtPoint(b, a.pos);
-        a.torque += cross(momentA, fieldAtA) * MAGNETIC_TORQUE_SCALE;
-        b.torque += cross(momentB, fieldAtB) * MAGNETIC_TORQUE_SCALE;
+        target.torque += cross(targetMoment, fieldAtTarget) * MAGNETIC_TORQUE_SCALE;
+        if (len(targetBaseMoment) >= MIN_EFFECTIVE_MAGNETIC_MOMENT) {
+          const fieldAtSource = dipoleFieldFromMomentAtPoint(target.pos, targetBaseMoment, source.pos);
+          source.torque += cross(sourceMoment, fieldAtSource) * MAGNETIC_TORQUE_SCALE;
+        }
       }
     }
   }
@@ -1242,16 +1312,21 @@
     const threshold = Math.max(0, Number(state.display.fieldThreshold) || 0);
     const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
     const offsetStart = -((subsamples - 1) * resolution) / 2;
+    const worldTopLeft = screenToWorld(v(0, 0));
+    const worldBottomRight = screenToWorld(v(simCanvas.width, simCanvas.height));
+    const firstGridPoint = (coord) => Math.floor((coord - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
+    const startX = firstGridPoint(worldTopLeft.x);
+    const startY = firstGridPoint(worldTopLeft.y);
 
-    for (let y = arrowSpacing / 2; y < simCanvas.height; y += arrowSpacing) {
-      for (let x = arrowSpacing / 2; x < simCanvas.width; x += arrowSpacing) {
-        const screenPoint = v(x, y);
-        const worldPoint = screenToWorld(screenPoint);
+    for (let y = startY; y <= worldBottomRight.y + arrowSpacing; y += arrowSpacing) {
+      for (let x = startX; x <= worldBottomRight.x + arrowSpacing; x += arrowSpacing) {
+        const worldPoint = v(x, y);
+        const screenPoint = worldToScreen(worldPoint);
         let field = v(0, 0);
         let count = 0;
         for (let sy = 0; sy < subsamples; sy += 1) {
           for (let sx = 0; sx < subsamples; sx += 1) {
-            const sample = screenToWorld(v(x + offsetStart + sx * resolution, y + offsetStart + sy * resolution));
+            const sample = add(worldPoint, v(offsetStart + sx * resolution, offsetStart + sy * resolution));
             field = add(field, magneticFieldAtPoint(sample));
             count += 1;
           }
@@ -1267,7 +1342,7 @@
             clamp((magnitude - threshold) / Math.max(FIELD_STRENGTH_RATIO_DIVISOR, 1), MIN_ARROW_STRENGTH_SCALE, 1)
           );
         const strengthRatio = clamp(arrowLength / MAX_FIELD_ARROW_LENGTH, MIN_ARROW_STRENGTH_SCALE, 1);
-        drawArrow(worldToScreen(worldPoint), mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
+        drawArrow(screenPoint, mul(unit(field), arrowLength), fieldArrowColorAtPoint(worldPoint), strengthRatio);
       }
     }
   }
@@ -1327,6 +1402,22 @@
 
     drawArrow(body.pos, mul(unit(body.force), Math.min(32, len(body.force) * 0.02)), "#22c55e");
     drawArrow(body.pos, v(0, clamp(-body.torque * 0.04, -26, 26)), "#a78bfa");
+
+    if (selected) {
+      const handle = selectedBodyRotateHandle(body);
+      ctx.strokeStyle = "#facc15";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(body.pos.x, body.pos.y);
+      ctx.lineTo(handle.x, handle.y);
+      ctx.stroke();
+      ctx.fillStyle = state.interaction.mode === "rotate" ? "#f59e0b" : "#facc15";
+      ctx.beginPath();
+      ctx.arc(handle.x, handle.y, ROTATE_HANDLE_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#0f172a";
+      ctx.stroke();
+    }
   }
 
   function render() {
@@ -1341,6 +1432,8 @@
       const a = state.bodies.find((body) => body.id === constraint.aId);
       const b = state.bodies.find((body) => body.id === constraint.bId);
       if (!a || !b) continue;
+      ctx.strokeStyle = constraint.id === state.selectedConstraintId ? "#facc15" : "#22d3ee";
+      ctx.lineWidth = constraint.id === state.selectedConstraintId ? 2.6 : 1.2;
       ctx.beginPath();
       ctx.moveTo(a.pos.x, a.pos.y);
       ctx.lineTo(b.pos.x, b.pos.y);
@@ -1522,6 +1615,7 @@
       state.view.pan = v(0, 0);
       state.view.isPanning = false;
       state.view.inputSource = null;
+      stopBodyInteraction();
       accumulator = 0;
       running = false;
       getEl("startPauseBtn").textContent = "Start";
@@ -1554,11 +1648,58 @@
     return Math.abs(local.x) <= body.width * 0.5 && Math.abs(local.y) <= body.height * 0.5;
   }
 
+  function selectedBodyRotateHandle(body) {
+    const direction = rotate(v(0, -1), body.angle);
+    const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.5;
+    return add(body.pos, mul(direction, extent + ROTATE_HANDLE_OFFSET));
+  }
+
+  function pointHitsRotateHandle(point, body) {
+    return len(sub(point, selectedBodyRotateHandle(body))) <= ROTATE_HANDLE_RADIUS + 4;
+  }
+
   function pickBody(point) {
     for (let i = state.bodies.length - 1; i >= 0; i -= 1) {
       if (pointInBody(point, state.bodies[i])) return state.bodies[i];
     }
     return null;
+  }
+
+  function pickConstraint(point) {
+    let bestConstraint = null;
+    let bestDistance = CONSTRAINT_PICK_DISTANCE;
+    for (const constraint of state.constraints) {
+      const a = state.bodies.find((body) => body.id === constraint.aId);
+      const b = state.bodies.find((body) => body.id === constraint.bId);
+      if (!a || !b) continue;
+      const distance = distancePointToSegment(point, a.pos, b.pos);
+      if (distance <= bestDistance) {
+        bestDistance = distance;
+        bestConstraint = constraint;
+      }
+    }
+    return bestConstraint;
+  }
+
+  function syncSelectedBodyInspector(useSetup = true) {
+    const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+    if (!body) return;
+    const source = useSetup && body.setup ? body.setup : body;
+    getEl("shapeX").value = source.pos.x.toFixed(2);
+    getEl("shapeY").value = source.pos.y.toFixed(2);
+    getEl("shapeAngle").value = ((source.angle * 180) / Math.PI).toFixed(2);
+  }
+
+  function setInteractionSummary(text) {
+    getEl("interactionSummary").textContent = text;
+  }
+
+  function stopBodyInteraction() {
+    state.interaction.mode = null;
+    state.interaction.bodyId = null;
+    state.interaction.pointerOffset = { x: 0, y: 0 };
+    state.interaction.pointerAngleDelta = 0;
+    setInteractionSummary("Left drag moves · rotate handle turns · right drag pans");
   }
 
   function toggleShapeInputs() {
@@ -1571,27 +1712,18 @@
   function setEditorView(view) {
     const validView = ["shape", "constraint", "options"].includes(view) ? view : "shape";
     state.editorView = validView;
-    const titles = {
-      shape: "Shape Editor",
-      constraint: "Constraint Editor",
-      options: "Options",
-    };
-    getEl("modalTitle").textContent = titles[validView];
     for (const panel of ["shape", "constraint", "options"]) {
       getEl(`${panel}Panel`).classList.toggle("hidden", panel !== validView);
       getEl(`${panel}TabBtn`).classList.toggle("active", panel === validView);
     }
   }
 
-  function openEditorModal(view) {
+  function showEditorView(view) {
     setEditorView(view);
-    getEl("modalOverlay").classList.remove("hidden");
-    getEl("modalOverlay").setAttribute("aria-hidden", "false");
   }
 
-  function closeEditorModal() {
-    getEl("modalOverlay").classList.add("hidden");
-    getEl("modalOverlay").setAttribute("aria-hidden", "true");
+  function cancelCanvasInteraction() {
+    stopBodyInteraction();
   }
 
   function wireUi() {
@@ -1603,18 +1735,14 @@
     getEl("stepBtn").addEventListener("click", () => step(FIXED_DT));
     getEl("resetBtn").addEventListener("click", resetDynamics);
     getEl("clearProjectBtn").addEventListener("click", clearProject);
-    getEl("openShapeModalBtn").addEventListener("click", () => openEditorModal("shape"));
-    getEl("openConstraintModalBtn").addEventListener("click", () => openEditorModal("constraint"));
-    getEl("openOptionsModalBtn").addEventListener("click", () => openEditorModal("options"));
-    getEl("modalCloseBtn").addEventListener("click", closeEditorModal);
-    getEl("modalOverlay").addEventListener("click", (event) => {
-      if (event.target === getEl("modalOverlay")) closeEditorModal();
-    });
+    getEl("openShapeModalBtn").addEventListener("click", () => showEditorView("shape"));
+    getEl("openConstraintModalBtn").addEventListener("click", () => showEditorView("constraint"));
+    getEl("openOptionsModalBtn").addEventListener("click", () => showEditorView("options"));
     for (const id of ["shapeTabBtn", "constraintTabBtn", "optionsTabBtn"]) {
       getEl(id).addEventListener("click", (event) => setEditorView(event.target.dataset.editorView));
     }
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !getEl("modalOverlay").classList.contains("hidden")) closeEditorModal();
+      if (event.key === "Escape") cancelCanvasInteraction();
     });
 
     getEl("addShapeBtn").addEventListener("click", () => {
@@ -1715,44 +1843,94 @@
       event.preventDefault();
     });
     simCanvas.addEventListener("mousedown", (event) => {
-      if (event.button !== RIGHT_MOUSE_BUTTON) return;
-      event.preventDefault();
-      state.view.isPanning = true;
-      state.view.inputSource = "mouse";
-      state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
-      simCanvas.classList.add("is-panning");
-    });
-    window.addEventListener("mousemove", (event) => {
-      if (!state.view.isPanning || state.view.inputSource !== "mouse") return;
-      const rect = simCanvas.getBoundingClientRect();
-      const scaleX = simCanvas.width / rect.width;
-      const scaleY = simCanvas.height / rect.height;
-      state.view.pan = add(
-        state.view.pan,
-        v((event.clientX - state.view.lastPointerClient.x) * scaleX, (event.clientY - state.view.lastPointerClient.y) * scaleY)
-      );
-      state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
-    });
-    window.addEventListener("mouseup", (event) => {
-      if (event.button !== RIGHT_MOUSE_BUTTON) return;
-      state.view.isPanning = false;
-      state.view.inputSource = null;
-      simCanvas.classList.remove("is-panning");
-    });
-    window.addEventListener("blur", () => {
-      if (!state.view.isPanning) return;
-      state.view.isPanning = false;
-      state.view.inputSource = null;
-      simCanvas.classList.remove("is-panning");
-    });
+      if (event.button === RIGHT_MOUSE_BUTTON) {
+        event.preventDefault();
+        state.view.isPanning = true;
+        state.view.inputSource = "mouse";
+        state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
+        simCanvas.classList.add("is-panning");
+        setInteractionSummary("Panning viewport");
+        return;
+      }
 
-    simCanvas.addEventListener("click", (event) => {
-      if (state.view.isPanning || event.button !== LEFT_MOUSE_BUTTON) return;
-      const body = pickBody(worldPointFromMouseEvent(event));
+      if (event.button !== LEFT_MOUSE_BUTTON) return;
+      const point = worldPointFromMouseEvent(event);
+      const selectedBody = state.bodies.find((body) => body.id === state.selectedBodyId);
+      if (selectedBody && pointHitsRotateHandle(point, selectedBody)) {
+        state.interaction.mode = "rotate";
+        state.interaction.bodyId = selectedBody.id;
+        state.interaction.pointerAngleDelta = Math.atan2(point.y - selectedBody.pos.y, point.x - selectedBody.pos.x) - selectedBody.angle;
+        setInteractionSummary(`Rotating shape #${selectedBody.id}`);
+        return;
+      }
+
+      const body = pickBody(point);
       if (body) {
         setSelectedBody(body.id);
-        refreshStatusSummary();
+        state.interaction.mode = "drag";
+        state.interaction.bodyId = body.id;
+        state.interaction.pointerOffset = sub(body.pos, point);
+        setInteractionSummary(`Dragging shape #${body.id}`);
+        return;
       }
+
+      const constraint = pickConstraint(point);
+      if (constraint) {
+        setSelectedConstraint(constraint.id);
+        setInteractionSummary(`Selected constraint: ${constraint.id}`);
+        return;
+      }
+
+      clearSelectedConstraint();
+    });
+    window.addEventListener("mousemove", (event) => {
+      if (state.view.isPanning && state.view.inputSource === "mouse") {
+        const rect = simCanvas.getBoundingClientRect();
+        const scaleX = simCanvas.width / rect.width;
+        const scaleY = simCanvas.height / rect.height;
+        state.view.pan = add(
+          state.view.pan,
+          v((event.clientX - state.view.lastPointerClient.x) * scaleX, (event.clientY - state.view.lastPointerClient.y) * scaleY)
+        );
+        state.view.lastPointerClient = { x: event.clientX, y: event.clientY };
+        return;
+      }
+
+      if (!state.interaction.mode) return;
+      const body = state.bodies.find((entry) => entry.id === state.interaction.bodyId);
+      if (!body) return;
+      const point = worldPointFromMouseEvent(event);
+      if (state.interaction.mode === "drag") {
+        body.pos = add(point, state.interaction.pointerOffset);
+        body.vel = v(0, 0);
+        body.force = v(0, 0);
+        body.angularVel = 0;
+        body.torque = 0;
+      } else if (state.interaction.mode === "rotate") {
+        body.angle = Math.atan2(point.y - body.pos.y, point.x - body.pos.x) - state.interaction.pointerAngleDelta;
+        body.angularVel = 0;
+        body.torque = 0;
+      }
+      body.setup = captureBodySetup(body);
+      syncSelectedBodyInspector(false);
+    });
+    window.addEventListener("mouseup", (event) => {
+      if (event.button === RIGHT_MOUSE_BUTTON) {
+        state.view.isPanning = false;
+        state.view.inputSource = null;
+        simCanvas.classList.remove("is-panning");
+        if (!state.interaction.mode) setInteractionSummary("Left drag moves · rotate handle turns · right drag pans");
+      }
+      if (event.button === LEFT_MOUSE_BUTTON && state.interaction.mode) {
+        syncSelectedBodyInspector();
+        stopBodyInteraction();
+      }
+    });
+    window.addEventListener("blur", () => {
+      state.view.isPanning = false;
+      state.view.inputSource = null;
+      simCanvas.classList.remove("is-panning");
+      stopBodyInteraction();
     });
   }
 
