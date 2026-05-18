@@ -61,12 +61,13 @@
             <div class="panel-section">
               <h3>Shape Editor</h3>
               <div class="grid">
-                <label>Type
-                  <select id="shapeType">
-                    <option value="rectangle">Rectangle</option>
-                    <option value="circle">Circle</option>
-                  </select>
-                </label>
+                 <label>Type
+                   <select id="shapeType">
+                     <option value="rectangle">Rectangle</option>
+                     <option value="circle">Circle</option>
+                     <option value="polyline">Polyline</option>
+                   </select>
+                 </label>
                 <label>X <input id="shapeX" type="number" value="180" /></label>
                 <label>Y <input id="shapeY" type="number" value="180" /></label>
                 <label>Width <input id="shapeW" type="number" value="90" min="5" /></label>
@@ -98,16 +99,39 @@
                     <option value="-1">South → North</option>
                   </select>
                 </label>
-                <label>Magnetic Strength <input id="shapeMoment" type="number" value="40" step="1" /></label>
-                <label>Remanence <input id="shapeRemanence" type="number" value="1.2" step="0.05" min="0" /></label>
-              </div>
-              <div class="row wrap">
-                <button id="addShapeBtn">Add Shape</button>
-                <button id="updateShapeBtn">Update Selected</button>
-                <button id="deleteShapeBtn">Delete Selected</button>
-              </div>
-            </div>
-          </section>
+                 <label>Magnetic Strength <input id="shapeMoment" type="number" value="40" step="1" /></label>
+                 <label>Remanence <input id="shapeRemanence" type="number" value="1.2" step="0.05" min="0" /></label>
+                 <label id="shapePolylineWrap" class="full-span">Polyline Points
+                   <textarea id="shapePolyline" rows="5" placeholder="-60,-20&#10;0,-55&#10;65,-10&#10;25,50&#10;-45,30"></textarea>
+                 </label>
+               </div>
+               <div class="row wrap">
+                 <button id="addShapeBtn">Add Shape</button>
+                 <button id="updateShapeBtn">Update Selected</button>
+                 <button id="deleteShapeBtn">Delete Selected</button>
+               </div>
+             </div>
+             <div class="panel-section">
+               <h3>Pole Brush</h3>
+               <div class="grid">
+                 <label class="checkbox-label">Enable Pole Brush
+                   <input id="poleBrushEnabled" type="checkbox" />
+                 </label>
+                 <label>Brush
+                   <select id="poleBrushMode">
+                     <option value="1">North</option>
+                     <option value="-1">South</option>
+                     <option value="0">Neutral</option>
+                   </select>
+                 </label>
+                 <label>Brush Radius (granules) <input id="poleBrushRadius" type="number" value="1" min="0" max="6" step="1" /></label>
+                 <label>Painting Strength <input id="poleBrushStrength" type="number" value="40" min="0" step="1" /></label>
+               </div>
+               <div class="row wrap">
+                 <button id="resetPolePaintBtn" type="button">Reset Selected Poles</button>
+               </div>
+             </div>
+           </section>
 
           <section id="constraintPanel" class="editor-panel hidden">
             <div class="panel-section">
@@ -171,10 +195,20 @@
               <div class="panel-section">
                 <h3>Magnetic Field</h3>
                 <div class="grid">
+                  <label>Render Mode
+                    <select id="fieldRenderMode">
+                      <option value="arrows">Arrows</option>
+                      <option value="heatmap">Heatmap</option>
+                    </select>
+                  </label>
                   <label>Arrow Spacing <input id="fieldSpacing" type="number" value="22" min="8" step="2" /></label>
                   <label>Sample Resolution <input id="fieldResolution" type="number" value="6" min="2" step="1" /></label>
                   <label>Field Scale <input id="fieldScale" type="number" value="1800" min="10" step="10" /></label>
                   <label>Arrow Threshold <input id="fieldThreshold" type="number" value="0.01" min="0" step="0.001" /></label>
+                  <label class="checkbox-label">Trace Field Lines
+                    <input id="fieldLinesEnabled" type="checkbox" />
+                  </label>
+                  <label>Lines per Pole <input id="fieldLineCount" type="number" value="3" min="1" max="12" step="1" /></label>
                 </div>
               </div>
 

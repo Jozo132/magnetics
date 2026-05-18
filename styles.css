@@ -151,6 +151,10 @@ h3 {
   gap: 10px;
 }
 
+.full-span {
+  grid-column: 1 / -1;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -205,6 +209,10 @@ textarea {
   min-height: 180px;
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#shapePolyline {
+  min-height: 120px;
 }
 
 canvas {
