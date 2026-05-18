@@ -43,10 +43,8 @@
   const ROTATE_HANDLE_RADIUS = 9;
   // Granule tuning values control how each rigid body is discretized for magnetic sampling and visualization.
   const MIN_GRANULES_PER_AXIS = 2;
-  const MAX_GRANULES_PER_AXIS = 6;
-  const GRANULE_AXIS_TARGET_DIVISOR = 3;
-  const MIN_GRANULE_SPACING = 14;
-  const MAX_GRANULE_SPACING = 34;
+  const DEFAULT_GRANULES_PER_AXIS = 4;
+  const MAX_GRANULES_PER_AXIS = 10;
   const CIRCLE_GRANULE_CLIP_RADIUS_FACTOR = 0.88;
   const CIRCLE_GRANULE_CLIP_SPACING_FACTOR = 0.35;
   const MIN_GRANULE_SAMPLE_RADIUS = 8;
@@ -62,6 +60,8 @@
   const MIN_GRANULE_POLE_EXTENT = 4;
   const GRANULE_POLE_EXTENT_SAMPLE_RADIUS_FACTOR = 0.55;
   const MIN_GRANULE_POLE_STRENGTH = 0.2;
+  const DEFAULT_SURFACE_RESISTANCE = 0.018;
+  const MAX_SURFACE_RESISTANCE = 5;
   const GRANULE_PERMANENT_MOMENT_COLOR = "rgba(251,146,60,0.9)";
   const GRANULE_INDUCED_MOMENT_COLOR = "rgba(226,232,240,0.82)";
   const GRANULE_PERMANENT_POINT_COLOR = "rgba(253,186,116,0.95)";
@@ -288,12 +288,9 @@
   }
 
   // Creates centered sample positions along one local axis so the body can be split into evenly spaced magnetic granules.
-  function buildGranuleAxisSamples(length, minimumCount = MIN_GRANULES_PER_AXIS) {
-    const safeLength = Math.max(length, MIN_GRANULE_SPACING);
-    const estimatedCount = Math.round(
-      safeLength / clamp(safeLength / GRANULE_AXIS_TARGET_DIVISOR, MIN_GRANULE_SPACING, MAX_GRANULE_SPACING)
-    );
-    const count = clamp(estimatedCount, minimumCount, MAX_GRANULES_PER_AXIS);
+  function buildGranuleAxisSamples(length, requestedCount = DEFAULT_GRANULES_PER_AXIS) {
+    const safeLength = Math.max(length, MIN_GRANULE_SAMPLE_RADIUS * 2);
+    const count = clamp(Math.round(requestedCount) || DEFAULT_GRANULES_PER_AXIS, MIN_GRANULES_PER_AXIS, MAX_GRANULES_PER_AXIS);
     const spacing = safeLength / count;
     const start = -safeLength * 0.5 + spacing * 0.5;
     return {
@@ -311,11 +308,16 @@
   function buildBodyGranuleLayout(body) {
     if (!bodyUsesMagneticGranules(body)) return [];
 
+    const baseGranularity = clamp(
+      Math.round(Number(body.meshGranularity) || DEFAULT_GRANULES_PER_AXIS),
+      MIN_GRANULES_PER_AXIS,
+      MAX_GRANULES_PER_AXIS
+    );
     const localPoints = [];
     if (body.type === "circle") {
       const diameter = body.radius * 2;
-      const xAxis = buildGranuleAxisSamples(diameter);
-      const yAxis = buildGranuleAxisSamples(diameter);
+      const xAxis = buildGranuleAxisSamples(diameter, baseGranularity);
+      const yAxis = buildGranuleAxisSamples(diameter, baseGranularity);
       const clipRadius = Math.max(
         body.radius * CIRCLE_GRANULE_CLIP_RADIUS_FACTOR,
         body.radius - Math.min(xAxis.spacing, yAxis.spacing) * CIRCLE_GRANULE_CLIP_SPACING_FACTOR
@@ -331,8 +333,9 @@
       return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
     }
 
-    const xAxis = buildGranuleAxisSamples(body.width);
-    const yAxis = buildGranuleAxisSamples(body.height);
+    const maxDimension = Math.max(body.width, body.height, 1);
+    const xAxis = buildGranuleAxisSamples(body.width, (body.width / maxDimension) * baseGranularity);
+    const yAxis = buildGranuleAxisSamples(body.height, (body.height / maxDimension) * baseGranularity);
     for (const y of yAxis.samples) {
       for (const x of xAxis.samples) {
         localPoints.push(v(x, y));
@@ -359,6 +362,17 @@
     const autoMass = Math.max(0.05, bodyArea(body) * material.density * MASS_SCALE);
     body.mass = body.massOverride == null ? autoMass : body.massOverride;
     body.invMass = body.fixed || body.mass <= 0 ? 0 : 1 / body.mass;
+    body.meshGranularity = clamp(
+      Math.round(Number(body.meshGranularity) || DEFAULT_GRANULES_PER_AXIS),
+      MIN_GRANULES_PER_AXIS,
+      MAX_GRANULES_PER_AXIS
+    );
+    const parsedSurfaceResistance = Number(body.surfaceResistance);
+    body.surfaceResistance = clamp(
+      Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : DEFAULT_SURFACE_RESISTANCE,
+      0,
+      MAX_SURFACE_RESISTANCE
+    );
 
     if (body.type === "circle") body.inertia = 0.5 * body.mass * body.radius * body.radius;
     else body.inertia = (body.mass * (body.width * body.width + body.height * body.height)) / 12;
@@ -389,6 +403,8 @@
       radius: body.radius,
       materialId: body.materialId,
       massOverride: body.massOverride,
+      meshGranularity: body.meshGranularity,
+      surfaceResistance: body.surfaceResistance,
       fixed: body.fixed,
       magnetic: {
         enabled: body.magnetic.enabled,
@@ -410,6 +426,8 @@
     body.radius = setup.radius;
     body.materialId = setup.materialId;
     body.massOverride = setup.massOverride == null ? null : setup.massOverride;
+    body.meshGranularity = setup.meshGranularity;
+    body.surfaceResistance = setup.surfaceResistance;
     body.fixed = Boolean(setup.fixed);
     body.magnetic = {
       enabled: Boolean(setup.magnetic?.enabled),
@@ -442,6 +460,8 @@
       radius: input.radius,
       materialId: input.materialId,
       massOverride: input.massOverride,
+      meshGranularity: input.meshGranularity,
+      surfaceResistance: input.surfaceResistance,
       fixed: input.fixed,
       magnetic: {
         enabled: input.magneticEnabled,
@@ -475,6 +495,8 @@
     body.radius = input.radius;
     body.materialId = input.materialId;
     body.massOverride = input.massOverride;
+    body.meshGranularity = input.meshGranularity;
+    body.surfaceResistance = input.surfaceResistance;
     body.fixed = input.fixed;
     body.magnetic = {
       enabled: input.magneticEnabled,
@@ -565,6 +587,19 @@
       radius: Math.max(3, Number(getEl("shapeR").value) || 3),
       angle: ((Number(getEl("shapeAngle").value) || 0) * Math.PI) / 180,
       massOverride: massText === "" ? null : Math.max(0.05, Number(massText) || 0.05),
+      meshGranularity: clamp(
+        Math.round(Number(getEl("shapeGranularity").value) || DEFAULT_GRANULES_PER_AXIS),
+        MIN_GRANULES_PER_AXIS,
+        MAX_GRANULES_PER_AXIS
+      ),
+      surfaceResistance: (() => {
+        const parsedSurfaceResistance = Number(getEl("shapeSurfaceResistance").value);
+        return clamp(
+          Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : DEFAULT_SURFACE_RESISTANCE,
+          0,
+          MAX_SURFACE_RESISTANCE
+        );
+      })(),
       materialId,
       fixed: getEl("shapeFixed").checked,
       magneticEnabled: getEl("shapeMagnetic").checked,
@@ -586,6 +621,8 @@
     getEl("shapeR").value = body.radius.toFixed(2);
     getEl("shapeAngle").value = (((body.setup ? body.setup.angle : body.angle) * 180) / Math.PI).toFixed(2);
     getEl("shapeMass").value = body.massOverride == null ? "" : body.massOverride.toFixed(2);
+    getEl("shapeGranularity").value = String(body.meshGranularity);
+    getEl("shapeSurfaceResistance").value = body.surfaceResistance.toFixed(3);
     getEl("shapeMaterial").value = material.id;
     getEl("shapeFixed").checked = body.fixed;
     getEl("shapeMagnetic").checked = magneticEnabled(body);
@@ -606,6 +643,8 @@
     getEl("shapeR").value = 28;
     getEl("shapeAngle").value = 0;
     getEl("shapeMass").value = "";
+    getEl("shapeGranularity").value = DEFAULT_GRANULES_PER_AXIS;
+    getEl("shapeSurfaceResistance").value = DEFAULT_SURFACE_RESISTANCE.toFixed(3);
     getEl("shapeMaterial").value = state.selectedMaterialId || state.materials[0]?.id || "";
     getEl("shapeFixed").checked = false;
     getEl("shapeMagnetic").checked = false;
@@ -1061,28 +1100,67 @@
     }
 
     for (const granule of granules) {
-      const field = magneticFieldAtPointFromGranules(granule.pos, granules, { excludeBodyId: granule.bodyId });
-      granule.externalField = field;
-      const momentMagnitude = len(granule.effectiveMoment);
-      const fieldMagnitude = len(field);
-      if (momentMagnitude < 1e-6 && fieldMagnitude < 1e-6) continue;
+      granule.externalField = v(0, 0);
+      granule.force = v(0, 0);
+    }
 
-      const epsilon = clamp(granule.sampleRadius * 0.35, MIN_MAGNETIC_GRADIENT_EPSILON, MAX_MAGNETIC_GRADIENT_EPSILON);
-      const energyDensityAt = (point) => dot(granule.effectiveMoment, magneticFieldAtPointFromGranules(point, granules, { excludeBodyId: granule.bodyId }));
-      const gradX = (energyDensityAt(add(granule.pos, v(epsilon, 0))) - energyDensityAt(add(granule.pos, v(-epsilon, 0)))) / (2 * epsilon);
-      const gradY = (energyDensityAt(add(granule.pos, v(0, epsilon))) - energyDensityAt(add(granule.pos, v(0, -epsilon)))) / (2 * epsilon);
-      let force = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
-      const maxGranuleForce = MAX_MAGNETIC_FORCE / (granuleCounts.get(granule.bodyId) || 1);
-      if (len(force) > maxGranuleForce) force = mul(unit(force), maxGranuleForce);
-      granule.force = force;
+    for (let i = 0; i < granules.length; i += 1) {
+      const a = granules[i];
+      for (let j = i + 1; j < granules.length; j += 1) {
+        const b = granules[j];
+        if (a.bodyId === b.bodyId) continue;
+        accumulateGranulePairInteraction(a, b, bodyAccumulators, granuleCounts);
+      }
+    }
 
+    for (const granule of granules) {
       const accumulator = bodyAccumulators.get(granule.bodyId);
-      accumulator.force = add(accumulator.force, force);
-      accumulator.torque += cross(sub(granule.pos, granule.body.pos), force);
-      accumulator.torque += cross(granule.effectiveMoment, field) * MAGNETIC_TORQUE_SCALE;
+      if (!accumulator) continue;
+      accumulator.torque += cross(granule.effectiveMoment, granule.externalField) * MAGNETIC_TORQUE_SCALE;
     }
 
     return { granules, bodyAccumulators };
+  }
+
+  function accumulateGranulePairInteraction(a, b, bodyAccumulators, granuleCounts) {
+    const fieldOnA = dipoleFieldFromMomentAtPoint(b.pos, b.effectiveMoment, a.pos);
+    const fieldOnB = dipoleFieldFromMomentAtPoint(a.pos, a.effectiveMoment, b.pos);
+    a.externalField = add(a.externalField, fieldOnA);
+    b.externalField = add(b.externalField, fieldOnB);
+
+    const aMomentMagnitude = len(a.effectiveMoment);
+    const bMomentMagnitude = len(b.effectiveMoment);
+    const fieldMagnitude = Math.max(len(fieldOnA), len(fieldOnB));
+    if (aMomentMagnitude < 1e-6 && bMomentMagnitude < 1e-6 && fieldMagnitude < 1e-6) return;
+
+    const epsilon = clamp(
+      Math.min(a.sampleRadius, b.sampleRadius) * 0.35,
+      MIN_MAGNETIC_GRADIENT_EPSILON,
+      MAX_MAGNETIC_GRADIENT_EPSILON
+    );
+    const interactionPotentialAt = (point) => dot(b.effectiveMoment, dipoleFieldFromMomentAtPoint(a.pos, a.effectiveMoment, point));
+    const gradX = (interactionPotentialAt(add(b.pos, v(epsilon, 0))) - interactionPotentialAt(add(b.pos, v(-epsilon, 0)))) / (2 * epsilon);
+    const gradY = (interactionPotentialAt(add(b.pos, v(0, epsilon))) - interactionPotentialAt(add(b.pos, v(0, -epsilon)))) / (2 * epsilon);
+    let pairForce = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
+    const maxPairForce = Math.min(
+      MAX_MAGNETIC_FORCE / Math.max(1, granuleCounts.get(a.bodyId) || 1),
+      MAX_MAGNETIC_FORCE / Math.max(1, granuleCounts.get(b.bodyId) || 1)
+    );
+    if (len(pairForce) > maxPairForce) pairForce = mul(unit(pairForce), maxPairForce);
+
+    a.force = sub(a.force, pairForce);
+    b.force = add(b.force, pairForce);
+
+    const bodyAccumulatorA = bodyAccumulators.get(a.bodyId);
+    const bodyAccumulatorB = bodyAccumulators.get(b.bodyId);
+    if (bodyAccumulatorA) {
+      bodyAccumulatorA.force = sub(bodyAccumulatorA.force, pairForce);
+      bodyAccumulatorA.torque += cross(sub(a.pos, a.body.pos), mul(pairForce, -1));
+    }
+    if (bodyAccumulatorB) {
+      bodyAccumulatorB.force = add(bodyAccumulatorB.force, pairForce);
+      bodyAccumulatorB.torque += cross(sub(b.pos, b.body.pos), pairForce);
+    }
   }
 
   function applyInducedGranuleMoments(granules) {
@@ -1151,10 +1229,31 @@
     for (const body of state.bodies) {
       const accumulator = magneticAnalysis.bodyAccumulators.get(body.id);
       if (!accumulator) continue;
-      let magneticForce = accumulator.force;
-      if (len(magneticForce) > MAX_MAGNETIC_FORCE) magneticForce = mul(unit(magneticForce), MAX_MAGNETIC_FORCE);
-      body.force = add(body.force, magneticForce);
+      body.force = add(body.force, accumulator.force);
       body.torque += accumulator.torque;
+    }
+  }
+
+  function bodySurfaceMeasure(body) {
+    if (body.type === "circle") return 2 * Math.PI * body.radius;
+    return 2 * (body.width + body.height);
+  }
+
+  function applySurfaceResistance() {
+    for (const body of state.bodies) {
+      if (body.fixed) continue;
+      const surfaceResistance = Math.max(0, body.surfaceResistance || 0);
+      if (surfaceResistance <= 0) continue;
+      const surfaceMeasure = bodySurfaceMeasure(body);
+      const linearSpeed = len(body.vel);
+      if (linearSpeed > 1e-6) {
+        const linearDragMagnitude = surfaceResistance * surfaceMeasure * linearSpeed * 0.08;
+        body.force = sub(body.force, mul(unit(body.vel), linearDragMagnitude));
+      }
+      if (Math.abs(body.angularVel) > 1e-6) {
+        const rotationalDragMagnitude = surfaceResistance * surfaceMeasure * bodyBoundingRadius(body) * Math.abs(body.angularVel) * 0.035;
+        body.torque -= Math.sign(body.angularVel) * rotationalDragMagnitude;
+      }
     }
   }
 
@@ -1417,6 +1516,7 @@
     resetForces();
     applyConstraints();
     applyMagnetics();
+    applySurfaceResistance();
     integrate(dt);
     worldTime += dt;
     sampleTracking();
@@ -1705,6 +1805,8 @@
         radius: body.radius,
         materialId: body.materialId,
         massOverride: body.massOverride,
+        meshGranularity: body.meshGranularity,
+        surfaceResistance: body.surfaceResistance,
         fixed: body.fixed,
         magnetic: body.magnetic,
         setup: body.setup,
@@ -1742,13 +1844,26 @@
           angle: Number(source.angle) || 0,
           angularVel: Number(source.angularVel) || 0,
           torque: 0,
-          width: Number(source.width) || 40,
-          height: Number(source.height) || 40,
-          radius: Number(source.radius) || 20,
-          materialId: source.materialId || state.materials[0].id,
-          massOverride: source.massOverride == null ? null : Number(source.massOverride),
-          fixed: Boolean(source.fixed),
-          magnetic: {
+           width: Number(source.width) || 40,
+           height: Number(source.height) || 40,
+           radius: Number(source.radius) || 20,
+           materialId: source.materialId || state.materials[0].id,
+           massOverride: source.massOverride == null ? null : Number(source.massOverride),
+           meshGranularity: clamp(
+             Math.round(Number(source.meshGranularity) || DEFAULT_GRANULES_PER_AXIS),
+             MIN_GRANULES_PER_AXIS,
+             MAX_GRANULES_PER_AXIS
+           ),
+           surfaceResistance: (() => {
+             const parsedSurfaceResistance = Number(source.surfaceResistance);
+             return clamp(
+               Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : DEFAULT_SURFACE_RESISTANCE,
+               0,
+               MAX_SURFACE_RESISTANCE
+             );
+           })(),
+           fixed: Boolean(source.fixed),
+           magnetic: {
             enabled: Boolean(source.magnetic?.enabled),
             model: source.magnetic?.model || "permanentDipole",
             localAngle: Number(source.magnetic?.localAngle) || 0,
@@ -1764,13 +1879,26 @@
               ...body.setup,
               pos: { x: Number(body.setup.pos?.x) || body.pos.x, y: Number(body.setup.pos?.y) || body.pos.y },
               angle: Number(body.setup.angle) || body.angle,
-              width: Number(body.setup.width) || body.width,
-              height: Number(body.setup.height) || body.height,
-              radius: Number(body.setup.radius) || body.radius,
-              materialId: body.setup.materialId || body.materialId,
-              massOverride: body.setup.massOverride == null ? null : Number(body.setup.massOverride),
-              fixed: Boolean(body.setup.fixed),
-              magnetic: {
+               width: Number(body.setup.width) || body.width,
+               height: Number(body.setup.height) || body.height,
+               radius: Number(body.setup.radius) || body.radius,
+               materialId: body.setup.materialId || body.materialId,
+               massOverride: body.setup.massOverride == null ? null : Number(body.setup.massOverride),
+               meshGranularity: clamp(
+                 Math.round(Number(body.setup.meshGranularity) || body.meshGranularity),
+                 MIN_GRANULES_PER_AXIS,
+                 MAX_GRANULES_PER_AXIS
+               ),
+               surfaceResistance: (() => {
+                 const parsedSurfaceResistance = Number(body.setup.surfaceResistance);
+                 return clamp(
+                   Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : body.surfaceResistance,
+                   0,
+                   MAX_SURFACE_RESISTANCE
+                 );
+               })(),
+               fixed: Boolean(body.setup.fixed),
+               magnetic: {
                 enabled: Boolean(body.setup.magnetic?.enabled),
                 model: body.setup.magnetic?.model || body.magnetic.model,
                 localAngle: Number(body.setup.magnetic?.localAngle) || body.magnetic.localAngle,
@@ -2145,6 +2273,8 @@
     radius: 20,
     angle: 0.3,
     massOverride: null,
+    meshGranularity: 4,
+    surfaceResistance: DEFAULT_SURFACE_RESISTANCE,
     materialId: "steel",
     magneticEnabled: true,
     magneticModel: "permanentDipole",
@@ -2162,6 +2292,8 @@
     radius: 36,
     angle: -0.3,
     massOverride: null,
+    meshGranularity: 5,
+    surfaceResistance: DEFAULT_SURFACE_RESISTANCE,
     materialId: "neodymium",
     magneticEnabled: true,
     magneticModel: "permanentDipole",
@@ -2179,6 +2311,8 @@
     radius: 20,
     angle: 0.15,
     massOverride: 4.8,
+    meshGranularity: 3,
+    surfaceResistance: DEFAULT_SURFACE_RESISTANCE,
     materialId: "iron",
     magneticEnabled: false,
     magneticModel: "inducedDipole",
