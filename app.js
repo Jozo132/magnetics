@@ -442,7 +442,7 @@
     body.angularVel = 0;
     body.torque = 0;
     syncBodyDerived(body);
-    body.setup = JSON.parse(JSON.stringify(setup));
+    body.setup = captureBodySetup(body);
   }
 
   function newBodyFromInput(input) {
@@ -1844,26 +1844,26 @@
           angle: Number(source.angle) || 0,
           angularVel: Number(source.angularVel) || 0,
           torque: 0,
-           width: Number(source.width) || 40,
-           height: Number(source.height) || 40,
-           radius: Number(source.radius) || 20,
-           materialId: source.materialId || state.materials[0].id,
-           massOverride: source.massOverride == null ? null : Number(source.massOverride),
-           meshGranularity: clamp(
-             Math.round(Number(source.meshGranularity) || DEFAULT_GRANULES_PER_AXIS),
-             MIN_GRANULES_PER_AXIS,
-             MAX_GRANULES_PER_AXIS
-           ),
-           surfaceResistance: (() => {
-             const parsedSurfaceResistance = Number(source.surfaceResistance);
-             return clamp(
-               Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : DEFAULT_SURFACE_RESISTANCE,
-               0,
-               MAX_SURFACE_RESISTANCE
-             );
-           })(),
-           fixed: Boolean(source.fixed),
-           magnetic: {
+          width: Number(source.width) || 40,
+          height: Number(source.height) || 40,
+          radius: Number(source.radius) || 20,
+          materialId: source.materialId || state.materials[0].id,
+          massOverride: source.massOverride == null ? null : Number(source.massOverride),
+          meshGranularity: clamp(
+            Math.round(Number(source.meshGranularity) || DEFAULT_GRANULES_PER_AXIS),
+            MIN_GRANULES_PER_AXIS,
+            MAX_GRANULES_PER_AXIS
+          ),
+          surfaceResistance: (() => {
+            const parsedSurfaceResistance = Number(source.surfaceResistance);
+            return clamp(
+              Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : DEFAULT_SURFACE_RESISTANCE,
+              0,
+              MAX_SURFACE_RESISTANCE
+            );
+          })(),
+          fixed: Boolean(source.fixed),
+          magnetic: {
             enabled: Boolean(source.magnetic?.enabled),
             model: source.magnetic?.model || "permanentDipole",
             localAngle: Number(source.magnetic?.localAngle) || 0,
@@ -1879,26 +1879,26 @@
               ...body.setup,
               pos: { x: Number(body.setup.pos?.x) || body.pos.x, y: Number(body.setup.pos?.y) || body.pos.y },
               angle: Number(body.setup.angle) || body.angle,
-               width: Number(body.setup.width) || body.width,
-               height: Number(body.setup.height) || body.height,
-               radius: Number(body.setup.radius) || body.radius,
-               materialId: body.setup.materialId || body.materialId,
-               massOverride: body.setup.massOverride == null ? null : Number(body.setup.massOverride),
-               meshGranularity: clamp(
-                 Math.round(Number(body.setup.meshGranularity) || body.meshGranularity),
-                 MIN_GRANULES_PER_AXIS,
-                 MAX_GRANULES_PER_AXIS
-               ),
-               surfaceResistance: (() => {
-                 const parsedSurfaceResistance = Number(body.setup.surfaceResistance);
-                 return clamp(
-                   Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : body.surfaceResistance,
-                   0,
-                   MAX_SURFACE_RESISTANCE
-                 );
-               })(),
-               fixed: Boolean(body.setup.fixed),
-               magnetic: {
+              width: Number(body.setup.width) || body.width,
+              height: Number(body.setup.height) || body.height,
+              radius: Number(body.setup.radius) || body.radius,
+              materialId: body.setup.materialId || body.materialId,
+              massOverride: body.setup.massOverride == null ? null : Number(body.setup.massOverride),
+              meshGranularity: clamp(
+                Math.round(Number(body.setup.meshGranularity) || body.meshGranularity),
+                MIN_GRANULES_PER_AXIS,
+                MAX_GRANULES_PER_AXIS
+              ),
+              surfaceResistance: (() => {
+                const parsedSurfaceResistance = Number(body.setup.surfaceResistance);
+                return clamp(
+                  Number.isFinite(parsedSurfaceResistance) ? parsedSurfaceResistance : body.surfaceResistance,
+                  0,
+                  MAX_SURFACE_RESISTANCE
+                );
+              })(),
+              fixed: Boolean(body.setup.fixed),
+              magnetic: {
                 enabled: Boolean(body.setup.magnetic?.enabled),
                 model: body.setup.magnetic?.model || body.magnetic.model,
                 localAngle: Number(body.setup.magnetic?.localAngle) || body.magnetic.localAngle,
