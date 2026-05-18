@@ -7,8 +7,8 @@
   const TRACK_SAMPLE_LIMIT = 5000;
   const FIXED_DT = 1 / 180;
   const MAX_STEPS_PER_FRAME = 12;
-  const LINEAR_DAMPING = 0.996;
-  const ANGULAR_DAMPING = 0.994;
+  const LINEAR_DAMPING = 1;
+  const ANGULAR_DAMPING = 1;
   const MASS_SCALE = 0.00012;
   const MAGNETIC_FIELD_SCALE = 2600;
   const MAGNETIC_FORCE_SCALE = 120;
@@ -36,6 +36,7 @@
   const LEFT_MOUSE_BUTTON = 0;
   const RIGHT_MOUSE_BUTTON = 2;
   const DEFAULT_FIELD_ARROW_COLOR = "rgba(147,197,253,0.5)";
+  const DEFAULT_HEATMAP_ALPHA = 0.72;
   const SOUTH_POLE_COLOR = { r: 96, g: 165, b: 250 };
   const NORTH_POLE_COLOR = { r: 248, g: 113, b: 113 };
   const CONSTRAINT_PICK_DISTANCE = 12;
@@ -51,6 +52,7 @@
   const DEFAULT_GRANULE_SAMPLE_RADIUS = 10;
   const GRANULE_SAMPLE_RADIUS_FACTOR = 0.68;
   const GRANULE_POINT_RADIUS = 3.2;
+  const GRANULE_PIXEL_PADDING = 1;
   const MIN_GRANULE_ARROW_LENGTH = 4;
   const MAX_GRANULE_ARROW_LENGTH = 12;
   const GRANULE_MOMENT_ARROW_SCALE = 0.18;
@@ -60,12 +62,16 @@
   const MIN_GRANULE_POLE_EXTENT = 4;
   const GRANULE_POLE_EXTENT_SAMPLE_RADIUS_FACTOR = 0.55;
   const MIN_GRANULE_POLE_STRENGTH = 0.2;
-  const DEFAULT_SURFACE_RESISTANCE = 0.018;
+  const DEFAULT_SURFACE_RESISTANCE = 0;
   const MAX_SURFACE_RESISTANCE = 5;
   const GRANULE_PERMANENT_MOMENT_COLOR = "rgba(251,146,60,0.9)";
   const GRANULE_INDUCED_MOMENT_COLOR = "rgba(226,232,240,0.82)";
   const GRANULE_PERMANENT_POINT_COLOR = "rgba(253,186,116,0.95)";
   const GRANULE_INDUCED_POINT_COLOR = "rgba(191,219,254,0.9)";
+  const NEUTRAL_GRANULE_COLOR = "rgba(148,163,184,0.86)";
+  const FIELD_LINE_STEP = 9;
+  const FIELD_LINE_MAX_STEPS = 320;
+  const FIELD_LINE_LOOP_THRESHOLD = 8;
 
   const MATERIAL_PRESETS = [
     {
@@ -154,10 +160,13 @@
     constraints: [],
     materials: MATERIAL_PRESETS.map((material) => ({ ...material })),
     display: {
+      fieldRenderMode: "arrows",
       fieldArrowSpacing: 22,
       fieldSampleResolution: 6,
       fieldScale: 1800,
       fieldThreshold: 0.01,
+      fieldLinesEnabled: false,
+      fieldLineCount: 3,
     },
     tracking: {
       bodyId: null,
@@ -179,6 +188,11 @@
       bodyId: null,
       pointerOffset: { x: 0, y: 0 },
       pointerAngleDelta: 0,
+    },
+    poleBrush: {
+      enabled: false,
+      mode: 1,
+      radius: 1,
     },
     magneticAnalysis: null,
     magneticAnalysisDirty: true,
@@ -259,13 +273,88 @@
     return state.materials.find((material) => material.id === materialId) || state.materials[0];
   }
 
+  function defaultPolylinePoints() {
+    return [
+      v(-60, -20),
+      v(0, -55),
+      v(65, -10),
+      v(25, 50),
+      v(-45, 30),
+    ];
+  }
+
+  function parsePolylinePoints(text) {
+    const lines = String(text || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const points = [];
+    for (const line of lines) {
+      const [rawX, rawY] = line.split(/[,\s]+/);
+      const x = Number(rawX);
+      const y = Number(rawY);
+      if (Number.isFinite(x) && Number.isFinite(y)) points.push(v(x, y));
+    }
+    return points.length >= 3 ? points : defaultPolylinePoints();
+  }
+
+  function formatPolylinePoints(points) {
+    return (points?.length ? points : defaultPolylinePoints()).map((point) => `${point.x.toFixed(0)},${point.y.toFixed(0)}`).join("\n");
+  }
+
+  function polygonBounds(points) {
+    const source = points?.length ? points : defaultPolylinePoints();
+    let minX = source[0].x;
+    let maxX = source[0].x;
+    let minY = source[0].y;
+    let maxY = source[0].y;
+    for (const point of source) {
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    }
+    return { minX, maxX, minY, maxY, width: Math.max(5, maxX - minX), height: Math.max(5, maxY - minY) };
+  }
+
+  function polygonArea(points) {
+    const source = points?.length ? points : defaultPolylinePoints();
+    let area = 0;
+    for (let i = 0; i < source.length; i += 1) {
+      const current = source[i];
+      const next = source[(i + 1) % source.length];
+      area += current.x * next.y - next.x * current.y;
+    }
+    return Math.abs(area) * 0.5;
+  }
+
+  function localPointInPolygon(point, polygon) {
+    const source = polygon?.length ? polygon : defaultPolylinePoints();
+    let inside = false;
+    for (let i = 0, j = source.length - 1; i < source.length; j = i, i += 1) {
+      const a = source[i];
+      const b = source[j];
+      const intersects =
+        a.y > point.y !== b.y > point.y &&
+        point.x < ((b.x - a.x) * (point.y - a.y)) / Math.max(1e-8, b.y - a.y) + a.x;
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  function bodyHasPaintedPoles(body) {
+    return Array.isArray(body.polePaint) && body.polePaint.some((value) => Math.abs(Number(value) || 0) > 0.001);
+  }
+
   function bodyArea(body) {
     if (body.type === "circle") return Math.PI * body.radius * body.radius;
+    if (body.type === "polyline") return polygonArea(body.points);
     return body.width * body.height;
   }
 
   function bodyBoundingRadius(body) {
     if (body.type === "circle") return body.radius;
+    if (body.type === "polyline") return Math.max(...(body.points?.map((point) => Math.hypot(point.x, point.y)) || [Math.hypot(body.width * 0.5, body.height * 0.5)]));
     return Math.hypot(body.width * 0.5, body.height * 0.5);
   }
 
@@ -284,7 +373,7 @@
   }
 
   function bodyUsesMagneticGranules(body) {
-    return magneticEnabled(body) || hasFerromagneticResponse(body);
+    return true;
   }
 
   // Creates centered sample positions along one local axis so the body can be split into evenly spaced magnetic granules.
@@ -330,7 +419,25 @@
       if (!localPoints.length) localPoints.push(v(0, 0));
       const sampleRadius = granuleSampleRadius(xAxis, yAxis);
       const share = 1 / localPoints.length;
-      return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
+      return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
+    }
+
+    if (body.type === "polyline") {
+      const bounds = polygonBounds(body.points);
+      const maxDimension = Math.max(bounds.width, bounds.height, 1);
+      const xAxis = buildGranuleAxisSamples(bounds.width, (bounds.width / maxDimension) * baseGranularity);
+      const yAxis = buildGranuleAxisSamples(bounds.height, (bounds.height / maxDimension) * baseGranularity);
+      const center = v((bounds.minX + bounds.maxX) * 0.5, (bounds.minY + bounds.maxY) * 0.5);
+      for (const y of yAxis.samples) {
+        for (const x of xAxis.samples) {
+          const localPos = add(v(x, y), center);
+          if (localPointInPolygon(localPos, body.points)) localPoints.push(localPos);
+        }
+      }
+      if (!localPoints.length) localPoints.push(v(center.x, center.y));
+      const sampleRadius = granuleSampleRadius(xAxis, yAxis);
+      const share = 1 / Math.max(1, localPoints.length);
+      return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
     }
 
     const maxDimension = Math.max(body.width, body.height, 1);
@@ -343,12 +450,19 @@
     }
     const sampleRadius = granuleSampleRadius(xAxis, yAxis);
     const share = 1 / Math.max(1, localPoints.length);
-    return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
+    return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
   }
 
   function syncBodyDerived(body) {
     const material = materialById(body.materialId);
     body.materialId = material.id;
+    body.type = ["rectangle", "circle", "polyline"].includes(body.type) ? body.type : "rectangle";
+    body.points = (body.points?.length ? body.points : defaultPolylinePoints()).map((point) => v(Number(point.x) || 0, Number(point.y) || 0));
+    if (body.type === "polyline") {
+      const bounds = polygonBounds(body.points);
+      body.width = bounds.width;
+      body.height = bounds.height;
+    }
     body.radius = clamp(Number(body.radius) || 20, 3, 300);
     body.width = clamp(Number(body.width) || 40, 5, simCanvas.width);
     body.height = clamp(Number(body.height) || 40, 5, simCanvas.height);
@@ -388,6 +502,8 @@
     body.magnetic.polarity = Number(body.magnetic.polarity) === -1 ? -1 : 1;
     body.magnetic.remanence = Math.max(0, Number(body.magnetic.remanence) || material.remanenceDefault || 0);
     body.granules = buildBodyGranuleLayout(body);
+    const previousPolePaint = Array.isArray(body.polePaint) ? body.polePaint.slice() : [];
+    body.polePaint = body.granules.map((_, index) => Number(previousPolePaint[index]) || 0);
     invalidateMagneticAnalysis();
 
     if (!body.setup) body.setup = captureBodySetup(body);
@@ -401,6 +517,7 @@
       width: body.width,
       height: body.height,
       radius: body.radius,
+      points: body.points.map((point) => ({ x: point.x, y: point.y })),
       materialId: body.materialId,
       massOverride: body.massOverride,
       meshGranularity: body.meshGranularity,
@@ -414,6 +531,7 @@
         polarity: body.magnetic.polarity,
         remanence: body.magnetic.remanence,
       },
+      polePaint: body.polePaint.slice(),
     };
   }
 
@@ -424,6 +542,7 @@
     body.width = setup.width;
     body.height = setup.height;
     body.radius = setup.radius;
+    body.points = (setup.points?.length ? setup.points : defaultPolylinePoints()).map((point) => v(Number(point.x) || 0, Number(point.y) || 0));
     body.materialId = setup.materialId;
     body.massOverride = setup.massOverride == null ? null : setup.massOverride;
     body.meshGranularity = setup.meshGranularity;
@@ -437,6 +556,7 @@
       polarity: Number(setup.magnetic?.polarity) === -1 ? -1 : 1,
       remanence: Math.max(0, Number(setup.magnetic?.remanence) || 0),
     };
+    body.polePaint = Array.isArray(setup.polePaint) ? setup.polePaint.map((value) => Number(value) || 0) : [];
     body.vel = v(0, 0);
     body.force = v(0, 0);
     body.angularVel = 0;
@@ -458,6 +578,7 @@
       width: input.width,
       height: input.height,
       radius: input.radius,
+      points: input.points,
       materialId: input.materialId,
       massOverride: input.massOverride,
       meshGranularity: input.meshGranularity,
@@ -471,6 +592,7 @@
         polarity: input.magneticPolarity,
         remanence: input.magneticRemanence,
       },
+      polePaint: [],
       setup: null,
     };
     syncBodyDerived(body);
@@ -493,6 +615,7 @@
     body.width = input.width;
     body.height = input.height;
     body.radius = input.radius;
+    body.points = input.points;
     body.materialId = input.materialId;
     body.massOverride = input.massOverride;
     body.meshGranularity = input.meshGranularity;
@@ -585,6 +708,7 @@
       width: Math.max(5, Number(getEl("shapeW").value) || 5),
       height: Math.max(5, Number(getEl("shapeH").value) || 5),
       radius: Math.max(3, Number(getEl("shapeR").value) || 3),
+      points: parsePolylinePoints(getEl("shapePolyline").value),
       angle: ((Number(getEl("shapeAngle").value) || 0) * Math.PI) / 180,
       massOverride: massText === "" ? null : Math.max(0.05, Number(massText) || 0.05),
       meshGranularity: clamp(
@@ -619,18 +743,20 @@
     getEl("shapeW").value = body.width.toFixed(2);
     getEl("shapeH").value = body.height.toFixed(2);
     getEl("shapeR").value = body.radius.toFixed(2);
+    getEl("shapePolyline").value = formatPolylinePoints(body.points);
     getEl("shapeAngle").value = (((body.setup ? body.setup.angle : body.angle) * 180) / Math.PI).toFixed(2);
     getEl("shapeMass").value = body.massOverride == null ? "" : body.massOverride.toFixed(2);
     getEl("shapeGranularity").value = String(body.meshGranularity);
     getEl("shapeSurfaceResistance").value = body.surfaceResistance.toFixed(3);
     getEl("shapeMaterial").value = material.id;
     getEl("shapeFixed").checked = body.fixed;
-    getEl("shapeMagnetic").checked = magneticEnabled(body);
+    getEl("shapeMagnetic").checked = magneticEnabled(body) || bodyHasPaintedPoles(body);
     getEl("shapeMagModel").value = body.magnetic.model;
     getEl("shapeMagAngle").value = ((body.magnetic.localAngle * 180) / Math.PI).toFixed(2);
     getEl("shapePolarity").value = String(body.magnetic.polarity || 1);
     getEl("shapeMoment").value = body.magnetic.strength.toFixed(2);
     getEl("shapeRemanence").value = body.magnetic.remanence.toFixed(2);
+    getEl("poleBrushStrength").value = body.magnetic.strength.toFixed(2);
     toggleShapeInputs();
   }
 
@@ -641,6 +767,7 @@
     getEl("shapeW").value = 90;
     getEl("shapeH").value = 50;
     getEl("shapeR").value = 28;
+    getEl("shapePolyline").value = formatPolylinePoints(defaultPolylinePoints());
     getEl("shapeAngle").value = 0;
     getEl("shapeMass").value = "";
     getEl("shapeGranularity").value = DEFAULT_GRANULES_PER_AXIS;
@@ -653,6 +780,7 @@
     getEl("shapePolarity").value = "1";
     getEl("shapeMoment").value = 40;
     getEl("shapeRemanence").value = materialById(getEl("shapeMaterial").value).remanenceDefault.toFixed(2);
+    getEl("poleBrushStrength").value = 40;
     toggleShapeInputs();
   }
 
@@ -809,10 +937,12 @@
       const row = document.createElement("tr");
       if (body.id === state.selectedBodyId) row.classList.add("selected");
       const material = materialById(body.materialId);
-      const magneticLabel = magneticEnabled(body)
+      const magneticLabel = bodyHasPaintedPoles(body)
+        ? "Painted poles"
+        : magneticEnabled(body)
         ? `${body.magnetic.model === "inducedDipole" ? "Induced" : "Permanent"} · ${body.magnetic.polarity === -1 ? "S→N" : "N→S"}`
         : bodyUsesMagneticGranules(body)
-          ? "Ferromagnetic granules"
+          ? "Neutral granules"
           : "No";
       row.dataset.bodyId = String(body.id);
       appendTableCell(row, `#${body.id}${body.fixed ? " 📌" : ""}`);
@@ -1023,6 +1153,31 @@
     return mul(axis, magnitude);
   }
 
+  function balancedPolePaint(body) {
+    const source = Array.isArray(body.polePaint) ? body.polePaint : [];
+    const positiveCount = source.filter((value) => value > 0.001).length;
+    const negativeCount = source.filter((value) => value < -0.001).length;
+    if (!positiveCount && !negativeCount) return source.map(() => 0);
+    const positiveScale = positiveCount > 0 ? Math.min(1, negativeCount / positiveCount || 0) : 0;
+    const negativeScale = negativeCount > 0 ? Math.min(1, positiveCount / negativeCount || 0) : 0;
+    return source.map((value) => {
+      if (value > 0.001) return positiveScale;
+      if (value < -0.001) return -negativeScale;
+      return 0;
+    });
+  }
+
+  function permanentMomentForGranule(body, layoutGranule, fallbackPermanentMoment, balancedPaint) {
+    const paintedPole = Number(balancedPaint?.[layoutGranule.index]) || 0;
+    if (Math.abs(paintedPole) > 0.001) {
+      const axis = magneticAxis(body);
+      const magnitude = body.magnetic.strength * Math.max(0.01, body.magnetic.remanence) * layoutGranule.share * paintedPole;
+      return mul(axis, magnitude);
+    }
+    if (bodyHasPaintedPoles(body)) return v(0, 0);
+    return mul(fallbackPermanentMoment, layoutGranule.share);
+  }
+
   function dipoleFieldFromMomentAtPoint(origin, moment, point) {
     if (len(moment) < 1e-8) return v(0, 0);
     const offset = sub(point, origin);
@@ -1062,18 +1217,22 @@
       if (!bodyUsesMagneticGranules(body)) continue;
       const layout = body.granules?.length ? body.granules : [{ localPos: v(0, 0), share: 1, sampleRadius: DEFAULT_GRANULE_SAMPLE_RADIUS }];
       const permanentMoment = magneticEnabled(body) ? configuredMagneticMoment(body) : v(0, 0);
+      const balancedPaint = balancedPolePaint(body);
       for (const layoutGranule of layout) {
+        const paintedPole = Number(balancedPaint[layoutGranule.index]) || 0;
         granules.push({
           id: nextGranuleId++,
           body,
           bodyId: body.id,
           pos: add(body.pos, rotate(layoutGranule.localPos, body.angle)),
           localPos: layoutGranule.localPos,
+          layoutIndex: layoutGranule.index,
           share: layoutGranule.share,
           sampleRadius: layoutGranule.sampleRadius,
-          permanentMoment: mul(permanentMoment, layoutGranule.share),
+          polePaint: paintedPole,
+          permanentMoment: permanentMomentForGranule(body, layoutGranule, permanentMoment, balancedPaint),
           inducedMoment: v(0, 0),
-          effectiveMoment: mul(permanentMoment, layoutGranule.share),
+          effectiveMoment: permanentMomentForGranule(body, layoutGranule, permanentMoment, balancedPaint),
           externalField: v(0, 0),
           force: v(0, 0),
         });
@@ -1211,17 +1370,23 @@
     return { northInfluence, southInfluence };
   }
 
-  function fieldArrowColorAtPoint(point, granules = state.magneticGranules) {
+  function fieldColorComponentsAtPoint(point, granules = state.magneticGranules) {
     const { northInfluence, southInfluence } = magneticPoleBiasAtPoint(point, granules);
     const totalInfluence = northInfluence + southInfluence;
-    if (totalInfluence <= 1e-6) return DEFAULT_FIELD_ARROW_COLOR;
+    if (totalInfluence <= 1e-6) {
+      return { r: 147, g: 197, b: 253, alpha: 0.5 };
+    }
     const blend = clamp((northInfluence - southInfluence) / totalInfluence, -1, 1);
     const northDominanceRatio = (blend + 1) * 0.5;
     const red = Math.round(lerp(SOUTH_POLE_COLOR.r, NORTH_POLE_COLOR.r, northDominanceRatio));
     const green = Math.round(lerp(SOUTH_POLE_COLOR.g, NORTH_POLE_COLOR.g, northDominanceRatio));
     const blue = Math.round(lerp(SOUTH_POLE_COLOR.b, NORTH_POLE_COLOR.b, northDominanceRatio));
-    const alpha = lerp(0.42, 0.82, Math.abs(blend));
-    return `rgba(${red},${green},${blue},${alpha.toFixed(3)})`;
+    return { r: red, g: green, b: blue, alpha: lerp(0.42, 0.82, Math.abs(blend)) };
+  }
+
+  function fieldArrowColorAtPoint(point, granules = state.magneticGranules) {
+    const { r, g, b, alpha } = fieldColorComponentsAtPoint(point, granules);
+    return `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
   }
 
   function applyMagnetics() {
@@ -1236,6 +1401,14 @@
 
   function bodySurfaceMeasure(body) {
     if (body.type === "circle") return 2 * Math.PI * body.radius;
+    if (body.type === "polyline") {
+      const points = body.points?.length ? body.points : defaultPolylinePoints();
+      let perimeter = 0;
+      for (let i = 0; i < points.length; i += 1) {
+        perimeter += len(sub(points[(i + 1) % points.length], points[i]));
+      }
+      return perimeter;
+    }
     return 2 * (body.width + body.height);
   }
 
@@ -1366,13 +1539,25 @@
     return { normal, penetration, contact };
   }
 
+  function collisionProxy(body) {
+    if (body.type !== "polyline") return body;
+    return {
+      ...body,
+      type: "rectangle",
+      width: body.width,
+      height: body.height,
+    };
+  }
+
   function detectCollision(a, b) {
     const radiusDistance = len(sub(b.pos, a.pos));
     if (radiusDistance > bodyBoundingRadius(a) + bodyBoundingRadius(b)) return null;
-    if (a.type === "circle" && b.type === "circle") return circleCircleCollision(a, b);
-    if (a.type === "rectangle" && b.type === "rectangle") return rectRectCollision(a, b);
-    if (a.type === "circle" && b.type === "rectangle") return circleRectCollision(a, b, false);
-    if (a.type === "rectangle" && b.type === "circle") return circleRectCollision(b, a, true);
+    const bodyA = collisionProxy(a);
+    const bodyB = collisionProxy(b);
+    if (bodyA.type === "circle" && bodyB.type === "circle") return circleCircleCollision(bodyA, bodyB);
+    if (bodyA.type === "rectangle" && bodyB.type === "rectangle") return rectRectCollision(bodyA, bodyB);
+    if (bodyA.type === "circle" && bodyB.type === "rectangle") return circleRectCollision(bodyA, bodyB, false);
+    if (bodyA.type === "rectangle" && bodyB.type === "circle") return circleRectCollision(bodyB, bodyA, true);
     return null;
   }
 
@@ -1557,15 +1742,21 @@
     ctx.fill();
   }
 
-  function drawField(granules) {
+  function visibleWorldBounds() {
+    return {
+      topLeft: screenToWorld(v(0, 0)),
+      bottomRight: screenToWorld(v(simCanvas.width, simCanvas.height)),
+    };
+  }
+
+  function drawFieldArrows(granules) {
     const arrowSpacing = clamp(Number(state.display.fieldArrowSpacing) || 22, 8, 200);
     const resolution = clamp(Number(state.display.fieldSampleResolution) || 6, 2, arrowSpacing);
     const scale = clamp(Number(state.display.fieldScale) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
     const threshold = Math.max(0, Number(state.display.fieldThreshold) || 0);
     const subsamples = Math.max(1, Math.ceil(arrowSpacing / resolution));
     const offsetStart = -((subsamples - 1) * resolution) / 2;
-    const worldTopLeft = screenToWorld(v(0, 0));
-    const worldBottomRight = screenToWorld(v(simCanvas.width, simCanvas.height));
+    const { topLeft: worldTopLeft, bottomRight: worldBottomRight } = visibleWorldBounds();
     const firstGridPoint = (coord) => Math.floor((coord - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
     const startX = firstGridPoint(worldTopLeft.x);
     const startY = firstGridPoint(worldTopLeft.y);
@@ -1599,18 +1790,137 @@
     }
   }
 
+  function drawFieldHeatmap(granules) {
+    const spacing = clamp(Number(state.display.fieldArrowSpacing) || 22, 8, 200);
+    const threshold = Math.max(0, Number(state.display.fieldThreshold) || 0);
+    const scale = clamp(Number(state.display.fieldScale) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
+    const { topLeft, bottomRight } = visibleWorldBounds();
+    const firstGridPoint = (coord) => Math.floor(coord / spacing) * spacing;
+
+    for (let y = firstGridPoint(topLeft.y); y <= bottomRight.y + spacing; y += spacing) {
+      for (let x = firstGridPoint(topLeft.x); x <= bottomRight.x + spacing; x += spacing) {
+        const worldPoint = v(x + spacing * 0.5, y + spacing * 0.5);
+        const field = magneticFieldAtPoint(worldPoint, granules);
+        const magnitude = len(field);
+        if (magnitude < threshold) continue;
+        const strength = clamp((magnitude - threshold) / Math.max(scale * 0.02, 1), 0, 1);
+        const { r, g, b } = fieldColorComponentsAtPoint(worldPoint, granules);
+        const alpha = strength * DEFAULT_HEATMAP_ALPHA;
+        const screenPoint = worldToScreen(v(x, y));
+        ctx.fillStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+        ctx.fillRect(screenPoint.x, screenPoint.y, spacing + 1, spacing + 1);
+      }
+    }
+  }
+
+  function collectFieldLineSources(granules) {
+    const sources = [];
+    const paintedGranules = granules.filter((granule) => Math.abs(granule.polePaint) > 0.001);
+    for (const granule of paintedGranules) {
+      const axis = magneticAxis(granule.body);
+      const sign = granule.polePaint > 0 ? 1 : -1;
+      const extent = Math.max(MIN_GRANULE_POLE_EXTENT, granule.sampleRadius * 0.5);
+      sources.push({
+        pos: add(granule.pos, mul(axis, extent * sign)),
+        sign,
+        axis,
+        sampleRadius: granule.sampleRadius,
+      });
+    }
+    if (sources.length) return sources;
+
+    for (const body of state.bodies) {
+      if (!magneticEnabled(body)) continue;
+      const axis = magneticAxis(body);
+      const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.45;
+      const northSign = body.magnetic.polarity === -1 ? -1 : 1;
+      sources.push({ pos: add(body.pos, mul(axis, extent * northSign)), sign: 1, axis, sampleRadius: extent * 0.25 });
+      sources.push({ pos: add(body.pos, mul(axis, -extent * northSign)), sign: -1, axis, sampleRadius: extent * 0.25 });
+    }
+    return sources;
+  }
+
+  function traceFieldLine(startPoint, sign, granules, bounds) {
+    const points = [worldToScreen(startPoint)];
+    let current = startPoint;
+    let lastDirection = null;
+    for (let stepIndex = 0; stepIndex < FIELD_LINE_MAX_STEPS; stepIndex += 1) {
+      const field = magneticFieldAtPoint(current, granules);
+      const magnitude = len(field);
+      if (magnitude < Math.max(0.0001, state.display.fieldThreshold * 0.25)) break;
+      const direction = mul(unit(field), sign);
+      if (lastDirection && dot(direction, lastDirection) < -0.35) break;
+      const next = add(current, mul(direction, FIELD_LINE_STEP));
+      if (
+        next.x < bounds.minX ||
+        next.x > bounds.maxX ||
+        next.y < bounds.minY ||
+        next.y > bounds.maxY
+      ) {
+        break;
+      }
+      if (points.some((point) => len(sub(point, worldToScreen(next))) < FIELD_LINE_LOOP_THRESHOLD)) break;
+      points.push(worldToScreen(next));
+      current = next;
+      lastDirection = direction;
+    }
+    return points;
+  }
+
+  function drawFieldLines(granules) {
+    if (!state.display.fieldLinesEnabled) return;
+    const sources = collectFieldLineSources(granules);
+    if (!sources.length) return;
+    const lineCount = clamp(Math.round(Number(state.display.fieldLineCount) || 3), 1, 12);
+    const { topLeft, bottomRight } = visibleWorldBounds();
+    const bounds = {
+      minX: topLeft.x - simCanvas.width,
+      maxX: bottomRight.x + simCanvas.width,
+      minY: topLeft.y - simCanvas.height,
+      maxY: bottomRight.y + simCanvas.height,
+    };
+
+    for (const source of sources) {
+      const tangent = perp(source.axis);
+      for (let i = 0; i < lineCount; i += 1) {
+        const offset = lineCount === 1 ? 0 : (i / (lineCount - 1) - 0.5) * source.sampleRadius * 1.6;
+        const start = add(source.pos, mul(tangent, offset));
+        const points = traceFieldLine(start, source.sign > 0 ? 1 : -1, granules, bounds);
+        if (points.length < 2) continue;
+        ctx.strokeStyle = source.sign > 0 ? "rgba(251,113,133,0.68)" : "rgba(96,165,250,0.68)";
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let pointIndex = 1; pointIndex < points.length; pointIndex += 1) {
+          ctx.lineTo(points[pointIndex].x, points[pointIndex].y);
+        }
+        ctx.stroke();
+      }
+    }
+  }
+
+  function drawField(granules) {
+    if (state.display.fieldRenderMode === "heatmap") drawFieldHeatmap(granules);
+    else drawFieldArrows(granules);
+    drawFieldLines(granules);
+  }
+
   function drawBodyGranules(body, granules) {
     if (!granules?.length) return;
     const momentColor = magneticEnabled(body) ? GRANULE_PERMANENT_MOMENT_COLOR : GRANULE_INDUCED_MOMENT_COLOR;
-    const pointColor = magneticEnabled(body) ? GRANULE_PERMANENT_POINT_COLOR : GRANULE_INDUCED_POINT_COLOR;
     for (const granule of granules) {
-      ctx.fillStyle = pointColor;
-      ctx.beginPath();
-      ctx.arc(granule.pos.x, granule.pos.y, GRANULE_POINT_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
+      const side = Math.max(4, granule.sampleRadius * 1.25 - GRANULE_PIXEL_PADDING * 2);
+      const color =
+        granule.polePaint > 0.001
+          ? "rgba(248,113,113,0.95)"
+          : granule.polePaint < -0.001
+            ? "rgba(96,165,250,0.95)"
+            : NEUTRAL_GRANULE_COLOR;
+      ctx.fillStyle = color;
+      ctx.fillRect(granule.pos.x - side * 0.5, granule.pos.y - side * 0.5, side, side);
 
       const momentMagnitude = len(granule.effectiveMoment);
-      if (momentMagnitude > 1e-4) {
+      if (momentMagnitude > 1e-4 && Math.abs(granule.polePaint) <= 0.001) {
         const arrowLength = clamp(momentMagnitude * GRANULE_MOMENT_ARROW_SCALE, MIN_GRANULE_ARROW_LENGTH, MAX_GRANULE_ARROW_LENGTH);
         drawArrow(
           granule.pos,
@@ -1640,12 +1950,20 @@
     ctx.translate(body.pos.x, body.pos.y);
     ctx.rotate(body.angle);
     ctx.lineWidth = selected ? 3 : 1.5;
-    ctx.strokeStyle = selected ? "#facc15" : magneticEnabled(body) ? "#f97316" : "#38bdf8";
-    ctx.fillStyle = magneticEnabled(body) ? "rgba(124,45,18,0.35)" : "rgba(30,41,59,0.7)";
+    ctx.strokeStyle = selected ? "#facc15" : magneticEnabled(body) || bodyHasPaintedPoles(body) ? "#f97316" : "#38bdf8";
+    ctx.fillStyle = magneticEnabled(body) || bodyHasPaintedPoles(body) ? "rgba(124,45,18,0.24)" : "rgba(30,41,59,0.7)";
 
     if (body.type === "circle") {
       ctx.beginPath();
       ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else if (body.type === "polyline") {
+      const points = body.points?.length ? body.points : defaultPolylinePoints();
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+      ctx.closePath();
       ctx.fill();
       ctx.stroke();
     } else {
@@ -1660,7 +1978,7 @@
     ctx.fillText(`#${body.id}${body.fixed ? " 📌" : ""}`, 8, -8);
     ctx.fillText(material.name, 8, 8);
 
-    if (magneticEnabled(body)) {
+    if (magneticEnabled(body) && !bodyHasPaintedPoles(body)) {
       const localAngle = body.magnetic.localAngle;
       const axis = v(Math.cos(localAngle), Math.sin(localAngle));
       const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.45;
@@ -1803,12 +2121,14 @@
         width: body.width,
         height: body.height,
         radius: body.radius,
+        points: body.points,
         materialId: body.materialId,
         massOverride: body.massOverride,
         meshGranularity: body.meshGranularity,
         surfaceResistance: body.surfaceResistance,
         fixed: body.fixed,
         magnetic: body.magnetic,
+        polePaint: body.polePaint,
         setup: body.setup,
       })),
       constraints: state.constraints,
@@ -1827,17 +2147,20 @@
       if (!state.materials.length) state.materials = MATERIAL_PRESETS.map((material) => ({ ...material }));
 
       state.display = {
+        fieldRenderMode: data.display?.fieldRenderMode === "heatmap" ? "heatmap" : "arrows",
         fieldArrowSpacing: Number(data.display?.fieldArrowSpacing) || 22,
         fieldSampleResolution: Number(data.display?.fieldSampleResolution) || 6,
         fieldScale: Number(data.display?.fieldScale) || 1800,
         fieldThreshold: Math.max(0, Number(data.display?.fieldThreshold) || 0.01),
+        fieldLinesEnabled: Boolean(data.display?.fieldLinesEnabled),
+        fieldLineCount: clamp(Math.round(Number(data.display?.fieldLineCount) || 3), 1, 12),
       };
 
       state.bodies = [];
       for (const source of data.bodies || []) {
         const body = {
           id: Number(source.id) || nextBodyId++,
-          type: source.type === "circle" ? "circle" : "rectangle",
+          type: ["circle", "rectangle", "polyline"].includes(source.type) ? source.type : "rectangle",
           pos: v(Number(source.pos?.x) || 0, Number(source.pos?.y) || 0),
           vel: v(Number(source.vel?.x) || 0, Number(source.vel?.y) || 0),
           force: v(0, 0),
@@ -1847,6 +2170,7 @@
           width: Number(source.width) || 40,
           height: Number(source.height) || 40,
           radius: Number(source.radius) || 20,
+          points: (source.points?.length ? source.points : defaultPolylinePoints()).map((point) => v(Number(point.x) || 0, Number(point.y) || 0)),
           materialId: source.materialId || state.materials[0].id,
           massOverride: source.massOverride == null ? null : Number(source.massOverride),
           meshGranularity: clamp(
@@ -1871,6 +2195,7 @@
             polarity: Number(source.magnetic?.polarity) === -1 ? -1 : 1,
             remanence: Math.max(0, Number(source.magnetic?.remanence) || 0),
           },
+          polePaint: Array.isArray(source.polePaint) ? source.polePaint.map((value) => Number(value) || 0) : [],
           setup: source.setup || null,
         };
         syncBodyDerived(body);
@@ -1882,6 +2207,7 @@
               width: Number(body.setup.width) || body.width,
               height: Number(body.setup.height) || body.height,
               radius: Number(body.setup.radius) || body.radius,
+              points: (body.setup.points?.length ? body.setup.points : body.points).map((point) => v(Number(point.x) || 0, Number(point.y) || 0)),
               materialId: body.setup.materialId || body.materialId,
               massOverride: body.setup.massOverride == null ? null : Number(body.setup.massOverride),
               meshGranularity: clamp(
@@ -1906,6 +2232,9 @@
                 polarity: Number(body.setup.magnetic?.polarity) === -1 ? -1 : 1,
                 remanence: Math.max(0, Number(body.setup.magnetic?.remanence) || body.magnetic.remanence),
               },
+              polePaint: Array.isArray(body.setup.polePaint)
+                ? body.setup.polePaint.map((value) => Number(value) || 0)
+                : body.polePaint.slice(),
             }
           : captureBodySetup(body);
         state.bodies.push(body);
@@ -1951,22 +2280,42 @@
   }
 
   function syncDisplayInputs() {
+    getEl("fieldRenderMode").value = state.display.fieldRenderMode;
     getEl("fieldSpacing").value = state.display.fieldArrowSpacing;
     getEl("fieldResolution").value = state.display.fieldSampleResolution;
     getEl("fieldScale").value = state.display.fieldScale;
     getEl("fieldThreshold").value = state.display.fieldThreshold;
+    getEl("fieldLinesEnabled").checked = Boolean(state.display.fieldLinesEnabled);
+    getEl("fieldLineCount").value = state.display.fieldLineCount;
+    getEl("poleBrushEnabled").checked = Boolean(state.poleBrush.enabled);
+    getEl("poleBrushMode").value = String(state.poleBrush.mode);
+    getEl("poleBrushRadius").value = String(state.poleBrush.radius);
   }
 
   function applyDisplayInputs() {
+    state.display.fieldRenderMode = getEl("fieldRenderMode").value === "heatmap" ? "heatmap" : "arrows";
     state.display.fieldArrowSpacing = Math.max(8, Number(getEl("fieldSpacing").value) || 22);
     state.display.fieldSampleResolution = Math.max(2, Number(getEl("fieldResolution").value) || 6);
     state.display.fieldScale = clamp(Number(getEl("fieldScale").value) || 1800, MIN_FIELD_SCALE, MAX_FIELD_SCALE);
     state.display.fieldThreshold = Math.max(0, Number(getEl("fieldThreshold").value) || 0);
+    state.display.fieldLinesEnabled = getEl("fieldLinesEnabled").checked;
+    state.display.fieldLineCount = clamp(Math.round(Number(getEl("fieldLineCount").value) || 3), 1, 12);
+    state.poleBrush.enabled = getEl("poleBrushEnabled").checked;
+    state.poleBrush.mode = Number(getEl("poleBrushMode").value) === -1 ? -1 : Number(getEl("poleBrushMode").value) === 0 ? 0 : 1;
+    state.poleBrush.radius = clamp(Math.round(Number(getEl("poleBrushRadius").value) || 1), 0, 6);
+    const brushStrength = Math.max(0, Number(getEl("poleBrushStrength").value) || 0);
+    const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+    if (body && brushStrength > 0 && body.magnetic.strength !== brushStrength) {
+      body.magnetic.strength = brushStrength;
+      body.setup = captureBodySetup(body);
+      invalidateMagneticAnalysis();
+    }
   }
 
   function pointInBody(point, body) {
     if (body.type === "circle") return len(sub(point, body.pos)) <= body.radius;
     const local = inverseRotate(sub(point, body.pos), body.angle);
+    if (body.type === "polyline") return localPointInPolygon(local, body.points);
     return Math.abs(local.x) <= body.width * 0.5 && Math.abs(local.y) <= body.height * 0.5;
   }
 
@@ -2003,6 +2352,39 @@
     return bestConstraint;
   }
 
+  function paintBodyGranules(body, worldPoint) {
+    if (!body || !body.granules?.length) return false;
+    const localPoint = inverseRotate(sub(worldPoint, body.pos), body.angle);
+    const brushMode = state.poleBrush.mode;
+    const brushRadius = Math.max(0, state.poleBrush.radius || 0);
+    let changed = false;
+    for (const granule of body.granules) {
+      const influenceRadius = granule.sampleRadius * (0.85 + brushRadius * 1.45);
+      if (len(sub(localPoint, granule.localPos)) > influenceRadius) continue;
+      if ((Number(body.polePaint[granule.index]) || 0) === brushMode) continue;
+      body.polePaint[granule.index] = brushMode;
+      changed = true;
+    }
+    if (!changed) return false;
+    if (brushMode !== 0) {
+      body.magnetic.enabled = true;
+      body.magnetic.strength = Math.max(body.magnetic.strength, Math.max(1, Number(getEl("poleBrushStrength").value) || 40));
+    }
+    body.setup = captureBodySetup(body);
+    invalidateMagneticAnalysis();
+    refreshShapeTable();
+    return true;
+  }
+
+  function resetBodyPolePaint(body) {
+    if (!body) return;
+    body.polePaint = body.granules.map(() => 0);
+    body.setup = captureBodySetup(body);
+    invalidateMagneticAnalysis();
+    refreshShapeTable();
+    loadSelectedBodyIntoForm();
+  }
+
   function syncSelectedBodyInspector(useSetup = true) {
     const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
     if (!body) return;
@@ -2025,10 +2407,13 @@
   }
 
   function toggleShapeInputs() {
-    const isCircle = getEl("shapeType").value === "circle";
-    getEl("shapeW").disabled = isCircle;
-    getEl("shapeH").disabled = isCircle;
+    const type = getEl("shapeType").value;
+    const isCircle = type === "circle";
+    const isPolyline = type === "polyline";
+    getEl("shapeW").disabled = isCircle || isPolyline;
+    getEl("shapeH").disabled = isCircle || isPolyline;
     getEl("shapeR").disabled = !isCircle;
+    getEl("shapePolylineWrap").classList.toggle("hidden", !isPolyline);
   }
 
   function setEditorView(view) {
@@ -2145,9 +2530,26 @@
     getEl("saveMaterialBtn").addEventListener("click", saveMaterial);
     getEl("deleteMaterialBtn").addEventListener("click", deleteMaterial);
 
-    for (const id of ["fieldSpacing", "fieldResolution", "fieldScale", "fieldThreshold"]) {
+    for (const id of [
+      "fieldRenderMode",
+      "fieldSpacing",
+      "fieldResolution",
+      "fieldScale",
+      "fieldThreshold",
+      "fieldLinesEnabled",
+      "fieldLineCount",
+      "poleBrushEnabled",
+      "poleBrushMode",
+      "poleBrushRadius",
+      "poleBrushStrength",
+    ]) {
       getEl(id).addEventListener("input", applyDisplayInputs);
+      getEl(id).addEventListener("change", applyDisplayInputs);
     }
+    getEl("resetPolePaintBtn").addEventListener("click", () => {
+      const body = state.bodies.find((entry) => entry.id === state.selectedBodyId);
+      resetBodyPolePaint(body);
+    });
 
     getEl("startTrackingBtn").addEventListener("click", () => {
       state.tracking.bodyId = Number(getEl("trackBody").value) || null;
@@ -2178,6 +2580,13 @@
       if (event.button !== LEFT_MOUSE_BUTTON) return;
       const point = worldPointFromMouseEvent(event);
       const selectedBody = state.bodies.find((body) => body.id === state.selectedBodyId);
+      if (state.poleBrush.enabled && selectedBody && pointInBody(point, selectedBody)) {
+        state.interaction.mode = "paint";
+        state.interaction.bodyId = selectedBody.id;
+        paintBodyGranules(selectedBody, point);
+        setInteractionSummary(`Painting poles on shape #${selectedBody.id}`);
+        return;
+      }
       if (selectedBody && pointHitsRotateHandle(point, selectedBody)) {
         state.interaction.mode = "rotate";
         state.interaction.bodyId = selectedBody.id;
@@ -2228,12 +2637,14 @@
         body.force = v(0, 0);
         body.angularVel = 0;
         body.torque = 0;
+      } else if (state.interaction.mode === "paint") {
+        paintBodyGranules(body, point);
       } else if (state.interaction.mode === "rotate") {
         body.angle = Math.atan2(point.y - body.pos.y, point.x - body.pos.x) - state.interaction.pointerAngleDelta;
         body.angularVel = 0;
         body.torque = 0;
       }
-      body.setup = captureBodySetup(body);
+      if (state.interaction.mode !== "paint") body.setup = captureBodySetup(body);
       invalidateMagneticAnalysis();
       syncSelectedBodyInspector(false);
     });
@@ -2321,7 +2732,6 @@
     magneticStrength: 8,
     magneticRemanence: 0.12,
   });
-  addConstraint({ aId: 1, bId: 2, distance: 250, stiffness: 4.2 });
   setSelectedBody(1);
 
   requestAnimationFrame(frame);
