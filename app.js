@@ -43,14 +43,23 @@
   const ROTATE_HANDLE_RADIUS = 9;
   const MIN_GRANULES_PER_AXIS = 2;
   const MAX_GRANULES_PER_AXIS = 6;
+  const GRANULE_AXIS_TARGET_DIVISOR = 3;
   const MIN_GRANULE_SPACING = 14;
   const MAX_GRANULE_SPACING = 34;
+  const CIRCLE_GRANULE_CLIP_RADIUS_FACTOR = 0.88;
+  const CIRCLE_GRANULE_CLIP_SPACING_FACTOR = 0.35;
+  const MIN_GRANULE_SAMPLE_RADIUS = 8;
+  const GRANULE_SAMPLE_RADIUS_FACTOR = 0.68;
   const GRANULE_POINT_RADIUS = 3.2;
   const MIN_GRANULE_ARROW_LENGTH = 4;
   const MAX_GRANULE_ARROW_LENGTH = 12;
+  const GRANULE_MOMENT_ARROW_SCALE = 0.18;
   const GRANULE_FORCE_ARROW_SCALE = 0.014;
   const MAX_GRANULE_FORCE_ARROW_LENGTH = 12;
   const GRANULE_INDUCTION_ITERATIONS = 2;
+  const MIN_GRANULE_POLE_EXTENT = 4;
+  const GRANULE_POLE_EXTENT_SAMPLE_RADIUS_FACTOR = 0.55;
+  const MIN_GRANULE_POLE_STRENGTH = 0.2;
   const GRANULE_PERMANENT_MOMENT_COLOR = "rgba(251,146,60,0.9)";
   const GRANULE_INDUCED_MOMENT_COLOR = "rgba(226,232,240,0.82)";
   const GRANULE_PERMANENT_POINT_COLOR = "rgba(253,186,116,0.95)";
@@ -278,7 +287,9 @@
 
   function buildGranuleAxisSamples(length, minimumCount = MIN_GRANULES_PER_AXIS) {
     const safeLength = Math.max(length, MIN_GRANULE_SPACING);
-    const estimatedCount = Math.round(safeLength / clamp(safeLength / 3, MIN_GRANULE_SPACING, MAX_GRANULE_SPACING));
+    const estimatedCount = Math.round(
+      safeLength / clamp(safeLength / GRANULE_AXIS_TARGET_DIVISOR, MIN_GRANULE_SPACING, MAX_GRANULE_SPACING)
+    );
     const count = clamp(estimatedCount, minimumCount, MAX_GRANULES_PER_AXIS);
     const spacing = safeLength / count;
     const start = -safeLength * 0.5 + spacing * 0.5;
@@ -289,6 +300,10 @@
     };
   }
 
+  function granuleSampleRadius(xAxis, yAxis) {
+    return Math.max(MIN_GRANULE_SAMPLE_RADIUS, Math.min(xAxis.spacing, yAxis.spacing) * GRANULE_SAMPLE_RADIUS_FACTOR);
+  }
+
   function buildBodyGranuleLayout(body) {
     if (!bodyUsesMagneticGranules(body)) return [];
 
@@ -297,14 +312,17 @@
       const diameter = body.radius * 2;
       const xAxis = buildGranuleAxisSamples(diameter);
       const yAxis = buildGranuleAxisSamples(diameter);
-      const clipRadius = Math.max(body.radius * 0.88, body.radius - Math.min(xAxis.spacing, yAxis.spacing) * 0.35);
+      const clipRadius = Math.max(
+        body.radius * CIRCLE_GRANULE_CLIP_RADIUS_FACTOR,
+        body.radius - Math.min(xAxis.spacing, yAxis.spacing) * CIRCLE_GRANULE_CLIP_SPACING_FACTOR
+      );
       for (const y of yAxis.samples) {
         for (const x of xAxis.samples) {
           if (Math.hypot(x, y) <= clipRadius) localPoints.push(v(x, y));
         }
       }
       if (!localPoints.length) localPoints.push(v(0, 0));
-      const sampleRadius = Math.max(8, Math.min(xAxis.spacing, yAxis.spacing) * 0.68);
+      const sampleRadius = granuleSampleRadius(xAxis, yAxis);
       const share = 1 / localPoints.length;
       return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
     }
@@ -316,7 +334,7 @@
         localPoints.push(v(x, y));
       }
     }
-    const sampleRadius = Math.max(8, Math.min(xAxis.spacing, yAxis.spacing) * 0.68);
+    const sampleRadius = granuleSampleRadius(xAxis, yAxis);
     const share = 1 / Math.max(1, localPoints.length);
     return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
   }
@@ -1093,10 +1111,10 @@
       const moment = granule.effectiveMoment;
       if (len(moment) < 1e-6) continue;
       const axis = unit(moment);
-      const extent = Math.max(4, granule.sampleRadius * 0.55);
+      const extent = Math.max(MIN_GRANULE_POLE_EXTENT, granule.sampleRadius * GRANULE_POLE_EXTENT_SAMPLE_RADIUS_FACTOR);
       const north = add(granule.pos, mul(axis, extent));
       const south = add(granule.pos, mul(axis, -extent));
-      const strength = Math.max(0.2, len(moment));
+      const strength = Math.max(MIN_GRANULE_POLE_STRENGTH, len(moment));
       const northDelta = sub(point, north);
       const southDelta = sub(point, south);
       const northDistance = Math.max(MIN_POLE_INFLUENCE_DISTANCE_SQUARED, dot(northDelta, northDelta));
@@ -1485,7 +1503,7 @@
 
       const momentMagnitude = len(granule.effectiveMoment);
       if (momentMagnitude > 1e-4) {
-        const arrowLength = clamp(momentMagnitude * 0.18, MIN_GRANULE_ARROW_LENGTH, MAX_GRANULE_ARROW_LENGTH);
+        const arrowLength = clamp(momentMagnitude * GRANULE_MOMENT_ARROW_SCALE, MIN_GRANULE_ARROW_LENGTH, MAX_GRANULE_ARROW_LENGTH);
         drawArrow(
           granule.pos,
           mul(unit(granule.effectiveMoment), arrowLength),
