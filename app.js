@@ -49,6 +49,7 @@
   const CIRCLE_GRANULE_CLIP_RADIUS_FACTOR = 0.88;
   const CIRCLE_GRANULE_CLIP_SPACING_FACTOR = 0.35;
   const MIN_GRANULE_SAMPLE_RADIUS = 8;
+  const DEFAULT_GRANULE_SAMPLE_RADIUS = 10;
   const GRANULE_SAMPLE_RADIUS_FACTOR = 0.68;
   const GRANULE_POINT_RADIUS = 3.2;
   const MIN_GRANULE_ARROW_LENGTH = 4;
@@ -994,7 +995,7 @@
     return dipoleFieldFromMomentAtPoint(body.pos, configuredMagneticMoment(body), point);
   }
 
-  function inducedMagneticMoment(body, field, geometryShare = 1) {
+  function inducedMagneticMoment(body, field, geometryFraction = 1) {
     if (!hasFerromagneticResponse(body)) return v(0, 0);
     const fieldMagnitude = len(field);
     if (fieldMagnitude < 1e-6) return v(0, 0);
@@ -1002,7 +1003,7 @@
     const susceptibility = Math.max(0, material.susceptibility);
     if (susceptibility === 0) return v(0, 0);
     const geometryScale =
-      (body.type === "circle" ? Math.PI * body.radius * body.radius : body.width * body.height) * Math.max(0, geometryShare);
+      (body.type === "circle" ? Math.PI * body.radius * body.radius : body.width * body.height) * Math.max(0, geometryFraction);
     const magnitude =
       fieldMagnitude *
       susceptibility *
@@ -1017,7 +1018,7 @@
     let nextGranuleId = 1;
     for (const body of state.bodies) {
       if (!bodyUsesMagneticGranules(body)) continue;
-      const layout = body.granules?.length ? body.granules : [{ localPos: v(0, 0), share: 1, sampleRadius: 10 }];
+      const layout = body.granules?.length ? body.granules : [{ localPos: v(0, 0), share: 1, sampleRadius: DEFAULT_GRANULE_SAMPLE_RADIUS }];
       const permanentMoment = magneticEnabled(body) ? configuredMagneticMoment(body) : v(0, 0);
       for (const layoutGranule of layout) {
         granules.push({
@@ -1051,6 +1052,7 @@
       granuleCounts.set(granule.bodyId, (granuleCounts.get(granule.bodyId) || 0) + 1);
     }
 
+    // Iterate a couple of times so induced granules can react to the field created by neighboring granules.
     for (let iteration = 0; iteration < GRANULE_INDUCTION_ITERATIONS; iteration += 1) {
       applyInducedGranuleMoments(granules);
     }
@@ -1092,8 +1094,8 @@
     const { excludeBodyId = null, excludeGranuleId = null } = options;
     let field = v(0, 0);
     for (const granule of granules) {
-      if (excludeGranuleId != null && granule.id === excludeGranuleId) continue;
-      if (excludeBodyId != null && granule.bodyId === excludeBodyId) continue;
+      if (excludeGranuleId !== null && granule.id === excludeGranuleId) continue;
+      if (excludeBodyId !== null && granule.bodyId === excludeBodyId) continue;
       if (len(granule.effectiveMoment) < 1e-8) continue;
       field = add(field, dipoleFieldFromMomentAtPoint(granule.pos, granule.effectiveMoment, point));
     }
