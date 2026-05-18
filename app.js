@@ -576,12 +576,18 @@
     getEl("constraintK").value = 8;
   }
 
+  function clearSelectedConstraint() {
+    state.selectedConstraintId = null;
+    refreshConstraintTable();
+    refreshStatusSummary();
+  }
+
   function setSelectedConstraint(constraintId) {
     state.selectedConstraintId = constraintId || null;
     loadSelectedConstraintIntoForm();
     refreshConstraintTable();
     refreshStatusSummary();
-    if (state.selectedConstraintId != null) setEditorView("constraint");
+    if (state.selectedConstraintId != null) showEditorView("constraint");
   }
 
   function loadSelectedConstraintIntoForm() {
@@ -890,7 +896,7 @@
     if (fieldMagnitude < 1e-6) return v(0, 0);
     const material = materialById(body.materialId);
     const susceptibility = Math.max(0, material.susceptibility);
-    if (susceptibility <= 0) return v(0, 0);
+    if (susceptibility === 0) return v(0, 0);
     const geometryScale =
       body.type === "circle" ? Math.PI * body.radius * body.radius : Math.max(body.width, body.height) * Math.min(body.width, body.height);
     const magnitude =
@@ -1311,8 +1317,9 @@
     const offsetStart = -((subsamples - 1) * resolution) / 2;
     const worldTopLeft = screenToWorld(v(0, 0));
     const worldBottomRight = screenToWorld(v(simCanvas.width, simCanvas.height));
-    const startX = Math.floor((worldTopLeft.x - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
-    const startY = Math.floor((worldTopLeft.y - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
+    const alignToGrid = (coord) => Math.floor((coord - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
+    const startX = alignToGrid(worldTopLeft.x);
+    const startY = alignToGrid(worldTopLeft.y);
 
     for (let y = startY; y <= worldBottomRight.y + arrowSpacing; y += arrowSpacing) {
       for (let x = startX; x <= worldBottomRight.x + arrowSpacing; x += arrowSpacing) {
@@ -1688,12 +1695,6 @@
 
   function setInteractionSummary(text) {
     getEl("interactionSummary").textContent = text;
-  }
-
-  function clearSelectedConstraint() {
-    state.selectedConstraintId = null;
-    refreshConstraintTable();
-    refreshStatusSummary();
   }
 
   function stopBodyInteraction() {
