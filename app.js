@@ -1053,21 +1053,23 @@
     }
 
     // Iterate a couple of times so induced granules can react to the field created by neighboring granules.
-    for (let iteration = 0; iteration < GRANULE_INDUCTION_ITERATIONS; iteration += 1) {
+    for (let iteration = 0; iteration < GRANULE_INDUCTION_ITERATIONS; iteration++) {
       applyInducedGranuleMoments(granules);
     }
 
     for (const granule of granules) {
       const field = magneticFieldAtPointFromGranules(granule.pos, granules, { excludeBodyId: granule.bodyId });
       granule.externalField = field;
-      if (len(granule.effectiveMoment) < 1e-6 && len(field) < 1e-6) continue;
+      const momentMagnitude = len(granule.effectiveMoment);
+      const fieldMagnitude = len(field);
+      if (momentMagnitude < 1e-6 && fieldMagnitude < 1e-6) continue;
 
       const epsilon = clamp(granule.sampleRadius * 0.35, MIN_MAGNETIC_GRADIENT_EPSILON, MAX_MAGNETIC_GRADIENT_EPSILON);
       const energyDensityAt = (point) => dot(granule.effectiveMoment, magneticFieldAtPointFromGranules(point, granules, { excludeBodyId: granule.bodyId }));
       const gradX = (energyDensityAt(add(granule.pos, v(epsilon, 0))) - energyDensityAt(add(granule.pos, v(-epsilon, 0)))) / (2 * epsilon);
       const gradY = (energyDensityAt(add(granule.pos, v(0, epsilon))) - energyDensityAt(add(granule.pos, v(0, -epsilon)))) / (2 * epsilon);
       let force = mul(v(gradX, gradY), MAGNETIC_FORCE_SCALE);
-      const maxGranuleForce = MAX_MAGNETIC_FORCE / Math.max(1, granuleCounts.get(granule.bodyId) || 1);
+      const maxGranuleForce = MAX_MAGNETIC_FORCE / (granuleCounts.get(granule.bodyId) || 1);
       if (len(force) > maxGranuleForce) force = mul(unit(force), maxGranuleForce);
       granule.force = force;
 
@@ -1516,9 +1518,10 @@
 
       const forceMagnitude = len(granule.force);
       if (forceMagnitude > 1e-3) {
+        const scaledForceLength = forceMagnitude * GRANULE_FORCE_ARROW_SCALE;
         drawArrow(
           granule.pos,
-          mul(unit(granule.force), Math.min(MAX_GRANULE_FORCE_ARROW_LENGTH, forceMagnitude * GRANULE_FORCE_ARROW_SCALE)),
+          mul(unit(granule.force), Math.min(MAX_GRANULE_FORCE_ARROW_LENGTH, scaledForceLength)),
           "rgba(34,197,94,0.72)",
           0.35
         );
