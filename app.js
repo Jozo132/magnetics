@@ -153,7 +153,7 @@
       mode: null,
       bodyId: null,
       pointerOffset: { x: 0, y: 0 },
-      rotatePointerOffset: 0,
+      pointerAngleDelta: 0,
     },
   };
 
@@ -513,7 +513,6 @@
 
   function setSelectedBody(bodyId) {
     state.selectedBodyId = bodyId == null ? null : Number(bodyId);
-    clearSelectedConstraint();
     loadSelectedBodyIntoForm();
     refreshShapeTable();
     refreshStatusSummary();
@@ -1315,9 +1314,9 @@
     const offsetStart = -((subsamples - 1) * resolution) / 2;
     const worldTopLeft = screenToWorld(v(0, 0));
     const worldBottomRight = screenToWorld(v(simCanvas.width, simCanvas.height));
-    const snapToGrid = (coord) => Math.floor((coord - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
-    const startX = snapToGrid(worldTopLeft.x);
-    const startY = snapToGrid(worldTopLeft.y);
+    const firstGridPoint = (coord) => Math.floor((coord - arrowSpacing * 0.5) / arrowSpacing) * arrowSpacing + arrowSpacing * 0.5;
+    const startX = firstGridPoint(worldTopLeft.x);
+    const startY = firstGridPoint(worldTopLeft.y);
 
     for (let y = startY; y <= worldBottomRight.y + arrowSpacing; y += arrowSpacing) {
       for (let x = startX; x <= worldBottomRight.x + arrowSpacing; x += arrowSpacing) {
@@ -1699,7 +1698,7 @@
     state.interaction.mode = null;
     state.interaction.bodyId = null;
     state.interaction.pointerOffset = { x: 0, y: 0 };
-    state.interaction.rotatePointerOffset = 0;
+    state.interaction.pointerAngleDelta = 0;
     setInteractionSummary("Left drag moves · rotate handle turns · right drag pans");
   }
 
@@ -1860,7 +1859,7 @@
       if (selectedBody && pointHitsRotateHandle(point, selectedBody)) {
         state.interaction.mode = "rotate";
         state.interaction.bodyId = selectedBody.id;
-        state.interaction.rotatePointerOffset = Math.atan2(point.y - selectedBody.pos.y, point.x - selectedBody.pos.x) - selectedBody.angle;
+        state.interaction.pointerAngleDelta = Math.atan2(point.y - selectedBody.pos.y, point.x - selectedBody.pos.x) - selectedBody.angle;
         setInteractionSummary(`Rotating shape #${selectedBody.id}`);
         return;
       }
@@ -1908,7 +1907,7 @@
         body.angularVel = 0;
         body.torque = 0;
       } else if (state.interaction.mode === "rotate") {
-        body.angle = Math.atan2(point.y - body.pos.y, point.x - body.pos.x) - state.interaction.rotatePointerOffset;
+        body.angle = Math.atan2(point.y - body.pos.y, point.x - body.pos.x) - state.interaction.pointerAngleDelta;
         body.angularVel = 0;
         body.torque = 0;
       }
