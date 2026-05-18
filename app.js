@@ -430,7 +430,7 @@
       if (!localPoints.length) localPoints.push(v(0, 0));
       const sampleRadius = granuleSampleRadius(xAxis, yAxis);
       const share = 1 / localPoints.length;
-      return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
+      return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
     }
 
     if (body.type === "polyline") {
@@ -448,7 +448,7 @@
       if (!localPoints.length) localPoints.push(v(center.x, center.y));
       const sampleRadius = granuleSampleRadius(xAxis, yAxis);
       const share = 1 / localPoints.length;
-      return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
+      return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
     }
 
     const maxDimension = Math.max(body.width, body.height, 1);
@@ -461,7 +461,7 @@
     }
     const sampleRadius = granuleSampleRadius(xAxis, yAxis);
     const share = 1 / localPoints.length;
-    return localPoints.map((localPos, index) => ({ index, localPos, share, sampleRadius }));
+    return localPoints.map((localPos) => ({ localPos, share, sampleRadius }));
   }
 
   function syncBodyDerived(body) {
@@ -1178,8 +1178,8 @@
     });
   }
 
-  function permanentMomentForGranule(body, layoutGranule, fallbackPermanentMoment, balancedPaint) {
-    const paintedPole = Number(balancedPaint?.[layoutGranule.index]) || 0;
+  function permanentMomentForGranule(body, layoutGranule, fallbackPermanentMoment, balancedPaint, layoutIndex) {
+    const paintedPole = Number(balancedPaint?.[layoutIndex]) || 0;
     if (Math.abs(paintedPole) > 0.001) {
       const axis = magneticAxis(body);
       const magnitude = body.magnetic.strength * Math.max(0.01, body.magnetic.remanence) * layoutGranule.share * paintedPole;
@@ -1229,25 +1229,24 @@
       const layout = body.granules?.length ? body.granules : [{ localPos: v(0, 0), share: 1, sampleRadius: DEFAULT_GRANULE_SAMPLE_RADIUS }];
       const permanentMoment = magneticEnabled(body) ? configuredMagneticMoment(body) : v(0, 0);
       const balancedPaint = balancedPolePaint(body);
-      for (const layoutGranule of layout) {
-        const paintedPole = Number(balancedPaint[layoutGranule.index]) || 0;
+      layout.forEach((layoutGranule, layoutIndex) => {
+        const paintedPole = Number(balancedPaint[layoutIndex]) || 0;
         granules.push({
           id: nextGranuleId++,
           body,
           bodyId: body.id,
           pos: add(body.pos, rotate(layoutGranule.localPos, body.angle)),
           localPos: layoutGranule.localPos,
-          layoutIndex: layoutGranule.index,
           share: layoutGranule.share,
           sampleRadius: layoutGranule.sampleRadius,
           polePaint: paintedPole,
-          permanentMoment: permanentMomentForGranule(body, layoutGranule, permanentMoment, balancedPaint),
+          permanentMoment: permanentMomentForGranule(body, layoutGranule, permanentMoment, balancedPaint, layoutIndex),
           inducedMoment: v(0, 0),
-          effectiveMoment: permanentMomentForGranule(body, layoutGranule, permanentMoment, balancedPaint),
+          effectiveMoment: permanentMomentForGranule(body, layoutGranule, permanentMoment, balancedPaint, layoutIndex),
           externalField: v(0, 0),
           force: v(0, 0),
         });
-      }
+      });
     }
 
     const bodyAccumulators = new Map(
@@ -2378,12 +2377,13 @@
     const brushMode = state.poleBrush.mode;
     const brushRadius = Math.max(0, state.poleBrush.radius || 0);
     let changed = false;
-    for (const granule of body.granules) {
+    for (let index = 0; index < body.granules.length; index += 1) {
+      const granule = body.granules[index];
       const influenceRadius = granule.sampleRadius * (0.85 + brushRadius * 1.45);
       if (len(sub(localPoint, granule.localPos)) > influenceRadius) continue;
-      const currentPole = Number(body.polePaint[granule.index]) || 0;
+      const currentPole = Number(body.polePaint[index]) || 0;
       if (currentPole === brushMode) continue;
-      body.polePaint[granule.index] = brushMode;
+      body.polePaint[index] = brushMode;
       changed = true;
     }
     if (!changed) return false;
