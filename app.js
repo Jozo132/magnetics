@@ -637,9 +637,7 @@
 
     function averageAnchor(targetProjection) {
       const matching = granules.filter((granule) => Math.abs(dot(granule.localPos, localAxis) - targetProjection) <= tolerance);
-      const source = matching.length
-        ? matching
-        : [granules[projections.indexOf(targetProjection === maxProjection ? maxProjection : minProjection)]];
+      const source = matching.length ? matching : [granules[projections.indexOf(targetProjection)]];
       const sum = source.reduce((acc, granule) => add(acc, granule.localPos), v(0, 0));
       return {
         localPos: mul(sum, 1 / source.length),
@@ -2063,9 +2061,8 @@
     for (const body of state.bodies) {
       if (!magneticEnabled(body)) continue;
       const anchors = alignedPoleAnchors(body);
-      const axis = magneticAxis(body);
-      sources.push({ pos: anchors.northWorld, sign: 1, axis, sampleRadius: anchors.sampleRadius });
-      sources.push({ pos: anchors.southWorld, sign: -1, axis, sampleRadius: anchors.sampleRadius });
+      sources.push({ pos: anchors.northWorld, sign: 1, axis: anchors.axis, sampleRadius: anchors.sampleRadius });
+      sources.push({ pos: anchors.southWorld, sign: -1, axis: anchors.axis, sampleRadius: anchors.sampleRadius });
     }
     return sources;
   }
