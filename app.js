@@ -84,6 +84,7 @@
   const FIELD_LINE_STEP = 9;
   const FIELD_LINE_MAX_STEPS = 320;
   const FIELD_LINE_LOOP_THRESHOLD = 8;
+  const POLE_ANCHOR_MATCH_TOLERANCE_FACTOR = 0.35;
 
   const MATERIAL_PRESETS = [
     {
@@ -348,8 +349,26 @@
     return points.length >= 3 ? points : defaultPolylinePoints();
   }
 
+  function parseVectorText(text, fallback = v(0, 0)) {
+    const parts = String(text || "")
+      .trim()
+      .split(/[,\s]+/)
+      .filter(Boolean);
+    if (parts.length < 2) return v(fallback.x, fallback.y);
+    const x = Number(parts[0]);
+    const y = Number(parts[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return v(fallback.x, fallback.y);
+    return v(x, y);
+  }
+
+  function formatVectorText(vector, digits = 2) {
+    const x = Number(vector?.x);
+    const y = Number(vector?.y);
+    return `${(Number.isFinite(x) ? x : 0).toFixed(digits)}, ${(Number.isFinite(y) ? y : 0).toFixed(digits)}`;
+  }
+
   function formatPolylinePoints(points) {
-    return (points?.length ? points : defaultPolylinePoints()).map((point) => `${point.x.toFixed(0)},${point.y.toFixed(0)}`).join("\n");
+    return (points?.length ? points : defaultPolylinePoints()).map((point) => `${point.x.toFixed(0)}, ${point.y.toFixed(0)}`).join("\n");
   }
 
   function clonePolylinePoints(points) {
@@ -362,6 +381,45 @@
       count > 0
         ? `${count} vertex${count === 1 ? "" : "es"} in the scene editor. Drag points, drag edges, or use insert handles to refine the outline.`
         : "Polyline scene editing is ready.";
+  }
+
+  function syncScalarShapeInputsFromVectors() {
+    const fallbackPosition = v(Number(getEl("shapeX").value) || simCanvas.width * 0.5, Number(getEl("shapeY").value) || simCanvas.height * 0.5);
+    const position = parseVectorText(getEl("shapePositionVec").value, fallbackPosition);
+    getEl("shapeX").value = position.x.toFixed(2);
+    getEl("shapeY").value = position.y.toFixed(2);
+
+    const type = getEl("shapeType").value;
+    if (type === "circle") {
+      const fallbackDiameter = v((Number(getEl("shapeR").value) || 28) * 2, (Number(getEl("shapeR").value) || 28) * 2);
+      const diameterVector = parseVectorText(getEl("shapeDiameterVec").value, fallbackDiameter);
+      const diameter = Math.max(6, Math.abs(diameterVector.x), Math.abs(diameterVector.y));
+      getEl("shapeR").value = (diameter * 0.5).toFixed(2);
+    } else {
+      const fallbackSize = v(Number(getEl("shapeW").value) || 90, Number(getEl("shapeH").value) || 50);
+      const size = parseVectorText(getEl("shapeSizeVec").value, fallbackSize);
+      getEl("shapeW").value = Math.max(5, Math.abs(size.x)).toFixed(2);
+      getEl("shapeH").value = Math.max(5, Math.abs(size.y)).toFixed(2);
+    }
+
+    if (type === "polyline") setPolylineSummary(parsePolylinePoints(getEl("shapePolyline").value));
+  }
+
+  function syncVectorShapeInputs(source = null) {
+    const type = source?.type || getEl("shapeType").value;
+    const position =
+      source?.pos ||
+      v(Number(getEl("shapeX").value) || simCanvas.width * 0.5, Number(getEl("shapeY").value) || simCanvas.height * 0.5);
+    const width = Number(source?.width) || Number(getEl("shapeW").value) || 90;
+    const height = Number(source?.height) || Number(getEl("shapeH").value) || 50;
+    const radius = Number(source?.radius) || Number(getEl("shapeR").value) || 28;
+    const points = source?.points?.length ? source.points : parsePolylinePoints(getEl("shapePolyline").value);
+
+    getEl("shapePositionVec").value = formatVectorText(position);
+    getEl("shapeSizeVec").value = formatVectorText(v(width, height));
+    getEl("shapeDiameterVec").value = formatVectorText(v(radius * 2, radius * 2));
+    getEl("shapePolyline").value = formatPolylinePoints(points);
+    setPolylineSummary(points);
   }
 
   function polygonBounds(points) {
@@ -544,6 +602,62 @@
       cellWidth: xAxis.spacing,
       cellHeight: yAxis.spacing,
     }));
+  }
+
+  function alignedPoleAnchors(body) {
+    const localAxis = v(Math.cos(body.magnetic?.localAngle || 0), Math.sin(body.magnetic?.localAngle || 0));
+    const granules = body.granules?.length ? body.granules : buildBodyGranuleLayout(body);
+    if (!granules.length) {
+      const fallbackExtent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.45;
+      const northSign = body.magnetic?.polarity === -1 ? -1 : 1;
+      const northLocal = mul(localAxis, fallbackExtent * northSign);
+      const southLocal = mul(localAxis, -fallbackExtent * northSign);
+      return {
+        axis: localAxis,
+        northLocal,
+        southLocal,
+        northWorld: localPointToWorld(body, northLocal),
+        southWorld: localPointToWorld(body, southLocal),
+        sampleRadius: fallbackExtent * 0.25,
+      };
+    }
+
+    const projections = granules.map((granule) => dot(granule.localPos, localAxis));
+    const minProjection = Math.min(...projections);
+    const maxProjection = Math.max(...projections);
+    const tolerance = Math.max(
+      1,
+      ...granules.map((granule) => {
+        const fallbackDiameter = (granule.sampleRadius ?? DEFAULT_GRANULE_SAMPLE_RADIUS) * 2;
+        const cellWidth = granule.cellWidth || fallbackDiameter;
+        const cellHeight = granule.cellHeight || fallbackDiameter;
+        return Math.min(cellWidth, cellHeight) * POLE_ANCHOR_MATCH_TOLERANCE_FACTOR;
+      })
+    );
+    const northSign = body.magnetic?.polarity === -1 ? -1 : 1;
+
+    function averageAnchor(targetProjection) {
+      const matching = granules.filter((granule) => Math.abs(dot(granule.localPos, localAxis) - targetProjection) <= tolerance);
+      const fallbackIndex = projections.findIndex((projection) => Math.abs(projection - targetProjection) <= 1e-6);
+      const fallbackGranule = granules[fallbackIndex >= 0 ? fallbackIndex : 0];
+      const source = matching.length ? matching : [fallbackGranule];
+      const sum = source.reduce((acc, granule) => add(acc, granule.localPos), v(0, 0));
+      return {
+        localPos: mul(sum, 1 / source.length),
+        sampleRadius: source.reduce((acc, granule) => acc + (granule.sampleRadius || DEFAULT_GRANULE_SAMPLE_RADIUS), 0) / source.length,
+      };
+    }
+
+    const northAnchor = averageAnchor(northSign > 0 ? maxProjection : minProjection);
+    const southAnchor = averageAnchor(northSign > 0 ? minProjection : maxProjection);
+    return {
+      axis: localAxis,
+      northLocal: northAnchor.localPos,
+      southLocal: southAnchor.localPos,
+      northWorld: localPointToWorld(body, northAnchor.localPos),
+      southWorld: localPointToWorld(body, southAnchor.localPos),
+      sampleRadius: (northAnchor.sampleRadius + southAnchor.sampleRadius) * 0.5,
+    };
   }
 
   function syncBodyDerived(body) {
@@ -789,6 +903,7 @@
   }
 
   function readShapeInput() {
+    syncScalarShapeInputsFromVectors();
     const massText = getEl("shapeMass").value.trim();
     const type = getEl("shapeType").value;
     const materialId = getEl("shapeMaterial").value || state.materials[0].id;
@@ -830,14 +945,15 @@
 
   function populateShapeForm(body) {
     const material = materialById(body.materialId);
+    const source = body.setup || body;
     getEl("shapeType").value = body.type;
-    getEl("shapeX").value = body.setup ? body.setup.pos.x.toFixed(2) : body.pos.x.toFixed(2);
-    getEl("shapeY").value = body.setup ? body.setup.pos.y.toFixed(2) : body.pos.y.toFixed(2);
+    getEl("shapeX").value = source.pos.x.toFixed(2);
+    getEl("shapeY").value = source.pos.y.toFixed(2);
     getEl("shapeW").value = body.width.toFixed(2);
     getEl("shapeH").value = body.height.toFixed(2);
     getEl("shapeR").value = body.radius.toFixed(2);
     getEl("shapePolyline").value = formatPolylinePoints(body.points);
-    getEl("shapeAngle").value = (((body.setup ? body.setup.angle : body.angle) * 180) / Math.PI).toFixed(2);
+    getEl("shapeAngle").value = ((source.angle * 180) / Math.PI).toFixed(2);
     getEl("shapeMass").value = body.massOverride == null ? "" : body.massOverride.toFixed(2);
     getEl("shapeGranularity").value = String(body.meshGranularity);
     getEl("shapeSurfaceResistance").value = body.surfaceResistance.toFixed(3);
@@ -850,7 +966,14 @@
     getEl("shapeMoment").value = body.magnetic.strength.toFixed(2);
     getEl("shapeRemanence").value = body.magnetic.remanence.toFixed(2);
     getEl("poleBrushStrength").value = body.magnetic.strength.toFixed(2);
-    setPolylineSummary(body.points);
+    syncVectorShapeInputs({
+      type: body.type,
+      pos: source.pos,
+      width: body.width,
+      height: body.height,
+      radius: body.radius,
+      points: body.points,
+    });
     toggleShapeInputs();
   }
 
@@ -875,7 +998,14 @@
     getEl("shapeMoment").value = 40;
     getEl("shapeRemanence").value = materialById(getEl("shapeMaterial").value).remanenceDefault.toFixed(2);
     getEl("poleBrushStrength").value = 40;
-    setPolylineSummary(defaultPolylinePoints());
+    syncVectorShapeInputs({
+      type: "rectangle",
+      pos: v(180, 180),
+      width: 90,
+      height: 50,
+      radius: 28,
+      points: defaultPolylinePoints(),
+    });
     toggleShapeInputs();
   }
 
@@ -1933,11 +2063,9 @@
 
     for (const body of state.bodies) {
       if (!magneticEnabled(body)) continue;
-      const axis = magneticAxis(body);
-      const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.45;
-      const northSign = body.magnetic.polarity === -1 ? -1 : 1;
-      sources.push({ pos: add(body.pos, mul(axis, extent * northSign)), sign: 1, axis, sampleRadius: extent * 0.25 });
-      sources.push({ pos: add(body.pos, mul(axis, -extent * northSign)), sign: -1, axis, sampleRadius: extent * 0.25 });
+      const anchors = alignedPoleAnchors(body);
+      sources.push({ pos: anchors.northWorld, sign: 1, axis: anchors.axis, sampleRadius: anchors.sampleRadius });
+      sources.push({ pos: anchors.southWorld, sign: -1, axis: anchors.axis, sampleRadius: anchors.sampleRadius });
     }
     return sources;
   }
@@ -2209,12 +2337,9 @@
     ctx.fillText(material.name, 8, 8);
 
     if (magneticEnabled(body) && !bodyHasPaintedPoles(body)) {
-      const localAngle = body.magnetic.localAngle;
-      const axis = v(Math.cos(localAngle), Math.sin(localAngle));
-      const extent = body.type === "circle" ? body.radius : Math.max(body.width, body.height) * 0.45;
-      const northSign = body.magnetic.polarity === -1 ? -1 : 1;
-      const north = mul(axis, extent * northSign);
-      const south = mul(axis, -extent * northSign);
+      const anchors = alignedPoleAnchors(body);
+      const north = anchors.northLocal;
+      const south = anchors.southLocal;
       ctx.strokeStyle = "#fda4af";
       ctx.beginPath();
       ctx.moveTo(south.x, south.y);
@@ -2769,9 +2894,19 @@
     const source = useSetup && body.setup ? body.setup : body;
     getEl("shapeX").value = source.pos.x.toFixed(2);
     getEl("shapeY").value = source.pos.y.toFixed(2);
+    getEl("shapeW").value = body.width.toFixed(2);
+    getEl("shapeH").value = body.height.toFixed(2);
+    getEl("shapeR").value = body.radius.toFixed(2);
     getEl("shapeAngle").value = ((source.angle * 180) / Math.PI).toFixed(2);
     getEl("shapePolyline").value = formatPolylinePoints(source.points);
-    setPolylineSummary(source.points);
+    syncVectorShapeInputs({
+      type: body.type,
+      pos: source.pos,
+      width: body.width,
+      height: body.height,
+      radius: body.radius,
+      points: source.points,
+    });
   }
 
   function setSectionCollapsed(section, collapsed) {
@@ -2837,7 +2972,10 @@
     getEl("shapeW").disabled = isCircle || isPolyline;
     getEl("shapeH").disabled = isCircle || isPolyline;
     getEl("shapeR").disabled = !isCircle;
+    getEl("shapeSizeVectorWrap").classList.toggle("hidden", isCircle || isPolyline);
+    getEl("shapeDiameterVectorWrap").classList.toggle("hidden", !isCircle);
     getEl("shapePolylineWrap").classList.toggle("hidden", !isPolyline);
+    syncVectorShapeInputs();
   }
 
   function setEditorView(view) {
@@ -2906,7 +3044,14 @@
       if (row) setSelectedBody(Number(row.dataset.bodyId));
     });
 
-    getEl("shapeType").addEventListener("change", toggleShapeInputs);
+    getEl("shapeType").addEventListener("change", () => {
+      syncScalarShapeInputsFromVectors();
+      toggleShapeInputs();
+    });
+    for (const id of ["shapePositionVec", "shapeSizeVec", "shapeDiameterVec", "shapePolyline"]) {
+      getEl(id).addEventListener("input", syncScalarShapeInputsFromVectors);
+      getEl(id).addEventListener("change", syncScalarShapeInputsFromVectors);
+    }
     getEl("shapeMaterial").addEventListener("change", () => {
       const material = materialById(getEl("shapeMaterial").value);
       getEl("shapeRemanence").value = material.remanenceDefault.toFixed(2);
