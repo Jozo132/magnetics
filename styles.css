@@ -220,6 +220,10 @@ h3 {
   color: #94a3b8;
 }
 
+.vector-input {
+  font-family: "SFMono-Regular", ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
 .workspace-header {
   display: flex;
   flex-wrap: wrap;
