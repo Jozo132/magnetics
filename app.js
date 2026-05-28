@@ -84,6 +84,7 @@
   const FIELD_LINE_STEP = 9;
   const FIELD_LINE_MAX_STEPS = 320;
   const FIELD_LINE_LOOP_THRESHOLD = 8;
+  const POLE_ANCHOR_MATCH_TOLERANCE_FACTOR = 0.35;
 
   const MATERIAL_PRESETS = [
     {
@@ -630,14 +631,16 @@
         const fallbackDiameter = (granule.sampleRadius ?? DEFAULT_GRANULE_SAMPLE_RADIUS) * 2;
         const cellWidth = granule.cellWidth || fallbackDiameter;
         const cellHeight = granule.cellHeight || fallbackDiameter;
-        return Math.min(cellWidth, cellHeight) * 0.35;
+        return Math.min(cellWidth, cellHeight) * POLE_ANCHOR_MATCH_TOLERANCE_FACTOR;
       })
     );
     const northSign = body.magnetic?.polarity === -1 ? -1 : 1;
 
     function averageAnchor(targetProjection) {
       const matching = granules.filter((granule) => Math.abs(dot(granule.localPos, localAxis) - targetProjection) <= tolerance);
-      const source = matching.length ? matching : [granules[projections.indexOf(targetProjection)]];
+      const fallbackIndex = projections.findIndex((projection) => Math.abs(projection - targetProjection) <= 1e-6);
+      const fallbackGranule = granules[fallbackIndex >= 0 ? fallbackIndex : 0];
+      const source = matching.length ? matching : [fallbackGranule];
       const sum = source.reduce((acc, granule) => add(acc, granule.localPos), v(0, 0));
       return {
         localPos: mul(sum, 1 / source.length),
