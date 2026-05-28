@@ -361,7 +361,9 @@
   }
 
   function formatVectorText(vector, digits = 2) {
-    return `${(Number(vector?.x) || 0).toFixed(digits)}, ${(Number(vector?.y) || 0).toFixed(digits)}`;
+    const x = Number(vector?.x);
+    const y = Number(vector?.y);
+    return `${(Number.isFinite(x) ? x : 0).toFixed(digits)}, ${(Number.isFinite(y) ? y : 0).toFixed(digits)}`;
   }
 
   function formatPolylinePoints(points) {
@@ -624,7 +626,12 @@
     const maxProjection = Math.max(...projections);
     const tolerance = Math.max(
       1,
-      ...granules.map((granule) => Math.min(granule.cellWidth || granule.sampleRadius * 2, granule.cellHeight || granule.sampleRadius * 2) * 0.35)
+      ...granules.map((granule) => {
+        const fallbackDiameter = (granule.sampleRadius ?? DEFAULT_GRANULE_SAMPLE_RADIUS) * 2;
+        const cellWidth = granule.cellWidth || fallbackDiameter;
+        const cellHeight = granule.cellHeight || fallbackDiameter;
+        return Math.min(cellWidth, cellHeight) * 0.35;
+      })
     );
     const northSign = body.magnetic?.polarity === -1 ? -1 : 1;
 
